@@ -1,0 +1,1173 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>ARAM 英雄排序工作台 — 初排快篩 + Binary Divide 二分定位 + 手動拖移</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0B0B0E;
+      --panel: #141419;
+      --panel2: #1C1C24;
+      --line: #272732;
+      --line2: #353545;
+      --text: #F2F2F5;
+      --muted: #9494A3;
+      --dim: #5E5E70;
+      --accent: #EF4444;
+      --ok: #34D399;
+      --warn: #F59E0B;
+      --info: #60A5FA;
+      --purple: #C084FC;
+      --radius: 10px;
+      --mono: "JetBrains Mono", Consolas, monospace;
+      --font: "Inter", "Noto Sans TC", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 18px 24px 60px;
+      max-width: 1440px;
+      margin: 0 auto;
+      user-select: none;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+    .save-pill {
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(52, 211, 153, 0.14);
+      color: var(--ok);
+      border: 1px solid rgba(52, 211, 153, 0.4);
+    }
+    .save-pill.warn {
+      background: rgba(245, 158, 11, 0.14);
+      color: var(--warn);
+      border-color: rgba(245, 158, 11, 0.4);
+    }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--line2);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--panel);
+    }
+    .seg button {
+      background: none;
+      border: 0;
+      color: var(--muted);
+      padding: 6px 12px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .seg button + button { border-left: 1px solid var(--line2); }
+    .seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+    .btn {
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .btn.green { background: #10B981; border-color: #10B981; color: #fff; font-weight: 700; }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 490px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 15px 16px;
+      margin-bottom: 14px;
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+
+    /* Binary Divide Left Panel */
+    .progress-bar {
+      height: 7px;
+      background: var(--line);
+      border-radius: 4px;
+      overflow: hidden;
+      flex: 1;
+    }
+    .progress-bar i { display: block; height: 100%; background: var(--ok); transition: width .2s; }
+    .binary-window {
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 11px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .binary-window b { color: var(--info); }
+    .vs-box {
+      display: grid;
+      grid-template-columns: 1fr 44px 1fr;
+      gap: 8px;
+      align-items: stretch;
+      margin: 10px 0;
+    }
+    .fighter {
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      border-radius: var(--radius);
+      padding: 14px 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: transform .12s, border-color .12s;
+      text-align: center;
+    }
+    .fighter:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .fighter.challenger { border-color: rgba(96, 165, 250, 0.55); }
+    .fighter .role-tag {
+      font-size: 10px;
+      font-family: var(--mono);
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.16);
+      color: var(--info);
+      border: 1px solid rgba(96, 165, 250, 0.35);
+    }
+    .fighter .role-tag.pivot {
+      background: rgba(245, 158, 11, 0.16);
+      color: var(--warn);
+      border-color: rgba(245, 158, 11, 0.35);
+    }
+    .fighter img { width: 80px; height: 80px; border-radius: 16px; object-fit: cover; pointer-events: none; }
+    .fighter .nm { font-size: 16px; font-weight: 700; }
+    .fighter .stats {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      background: rgba(0,0,0,0.28);
+      padding: 5px 8px;
+      border-radius: 6px;
+      width: 100%;
+    }
+    .fighter .delta {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ok);
+      font-weight: 600;
+    }
+    .vs-mid {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 15px;
+    }
+    .move-tier-bar {
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .move-tier-bar .mini-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+    .move-tier-bar button {
+      background: var(--panel);
+      border: 1px solid var(--line2);
+      color: var(--text);
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .move-tier-bar button:hover { border-color: var(--accent); color: var(--accent); }
+    .actions { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+    .kbd {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      margin-left: 3px;
+    }
+
+    /* Right Panel: 5-Tier Drag-and-Drop + Quick Paint Board */
+    .tier-board { display: flex; flex-direction: column; gap: 8px; }
+    .tier-row {
+      display: flex;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel2);
+      min-height: 62px;
+    }
+    .tier-row.active-scope { border-color: rgba(239, 68, 68, 0.55); }
+    .tier-head {
+      width: 78px;
+      flex: none;
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 4px;
+      font-weight: 700;
+      font-size: 14px;
+      gap: 2px;
+    }
+    .tier-head small { font-family: var(--mono); font-size: 10px; color: var(--muted); font-weight: 400; }
+    .tier-row[data-t="本命"] .tier-head { color: var(--accent); }
+    .tier-row[data-t="愛角"] .tier-head { color: var(--purple); }
+    .tier-row[data-t="順手"] .tier-head { color: var(--info); }
+    .tier-row[data-t="勉強"] .tier-head { color: var(--muted); }
+    .tier-row[data-t="封印"] .tier-head { color: var(--dim); }
+
+    .tier-drop {
+      flex: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      padding: 8px;
+      align-content: flex-start;
+    }
+    .tier-drop.over { background: rgba(239, 68, 68, 0.09); }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 7px 3px 3px;
+      background: var(--panel);
+      border: 1px solid var(--line2);
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: grab;
+      transition: border-color .12s, transform .1s, opacity .12s;
+    }
+    .chip:hover { border-color: var(--accent); }
+    .chip.dragging { opacity: 0.35; }
+    .chip.in-binary-range { border-color: rgba(245, 158, 11, 0.6); background: rgba(245, 158, 11, 0.08); }
+    .chip.is-pivot { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); background: rgba(245, 158, 11, 0.18); }
+    .chip.is-challenger { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); background: rgba(96, 165, 250, 0.18); }
+    .chip.unranked-in-session { opacity: 0.6; border-style: dashed; }
+    .chip.hide { opacity: 0.12; pointer-events: none; }
+    .chip img { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; pointer-events: none; }
+    .chip .rk-num { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+    .chip .sc { font-family: var(--mono); font-size: 10px; color: var(--ok); }
+
+    /* Initial Prep Modal / Drawer */
+    .prep-box {
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .prep-box.open { display: block; }
+    .prep-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+    .p-item { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+    .p-item label { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .p-item label b { color: var(--text); font-family: var(--mono); }
+    .p-item input[type=range] { width: 100%; accent-color: var(--accent); }
+    .note {
+      border: 1px dashed var(--line2);
+      border-radius: 8px;
+      padding: 8px 11px;
+      color: var(--muted);
+      font-size: 11.5px;
+      margin-top: 8px;
+    }
+    .note b { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>
+      ⚡ ARAM 英雄排序工作台 (Binary Divide + 自由拖移微調)
+      <span class="save-pill" id="saveStatusPill">💾 硬碟雙重即時自動存檔中...</span>
+    </h1>
+    <div class="sub">左邊用「二分法 (Binary Divide)」每隻點 3 下極速排好先後；右邊隨時直接「滑鼠拖拉微調」或「畫筆點選換層」。每點 1 下都會在 0.05 秒內直接寫進硬碟！</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn" id="btnTogglePrep">⚙️ 展開「初始分層產生器（依對戰紀錄+專精）」</button>
+    <button class="btn green" id="btnExportJson">💾 下載 JSON 設定檔</button>
+    <button class="btn" id="btnImportJsonTrigger">📂 匯入 JSON</button>
+    <input type="file" id="importFileIn" accept=".json,application/json" hidden>
+  </div>
+</header>
+
+<!-- 可展開的「初始分層產生器」 -->
+<div class="prep-box" id="prepDrawer">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <b>📊 初始分層快篩產生器（使用你帳號的 51 場近期大亂鬥紀錄 ＋ 162 隻英雄專精）</b>
+    <span style="font-size:11px;color:var(--muted)">覺得初始分類不夠好時，拉動下方比例並按「套用此初排」，再用右邊畫筆微調即可</span>
+  </div>
+  <div class="prep-grid">
+    <div class="p-item">
+      <label><span>🔥 近期對戰出場與勝率權重</span><b id="lblWRec">55%</b></label>
+      <input type="range" id="wRec" min="0" max="100" value="55">
+    </div>
+    <div class="p-item">
+      <label><span>🏆 歷史專精分數權重</span><b id="lblWMas">30%</b></label>
+      <input type="range" id="wMas" min="0" max="100" value="30">
+    </div>
+    <div class="p-item">
+      <label><span>🕒 近期最後遊玩時間新鮮度</span><b id="lblWTime">15%</b></label>
+      <input type="range" id="wTime" min="0" max="100" value="15">
+    </div>
+    <div class="p-item">
+      <label><span>👑 本命 / 愛角 / 順手 初始人數</span><b id="lblCounts">16 / 36 / 55</b></label>
+      <div style="display:flex;gap:4px">
+        <input type="number" id="inBen" value="16" min="5" max="35" style="width:33%;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:4px;padding:2px 5px;font-family:var(--mono)">
+        <input type="number" id="inAi" value="36" min="10" max="60" style="width:33%;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:4px;padding:2px 5px;font-family:var(--mono)">
+        <input type="number" id="inShun" value="55" min="15" max="80" style="width:33%;background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:4px;padding:2px 5px;font-family:var(--mono)">
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn primary" id="btnRunAutoPrep">⚡ 依上方權重重新產生初始分層</button>
+  </div>
+</div>
+
+<div class="workspace">
+  <!-- 左欄：Binary Divide 二分極速排序器 -->
+  <div class="card">
+    <div class="card-title">
+      <span>① Binary Divide 二分法極速定位</span>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--muted)" id="clickCountBadge">本層已點 0 下</span>
+    </div>
+
+    <div class="toolbar">
+      <div class="seg" id="scopeSeg">
+        <button class="on" data-scope="本命">排 本命</button>
+        <button data-scope="愛角">排 愛角</button>
+        <button data-scope="順手">排 順手</button>
+        <button data-scope="勉強">排 勉強</button>
+      </div>
+      <button class="btn" id="btnRestartTierBinary" style="margin-left:auto;padding:5px 9px;font-size:11px" title="將目前這個階層重新用二分法從頭排一次">↺ 重排本層</button>
+    </div>
+
+    <div class="toolbar" style="margin-top:-2px">
+      <div class="progress-bar"><i id="progBar" style="width:0%"></i></div>
+      <span id="progText" style="font-family:var(--mono);font-size:11px;color:var(--ok);font-weight:600">0 / 0</span>
+    </div>
+
+    <div class="binary-window" id="binaryStatusBox"></div>
+
+    <div class="vs-box">
+      <div class="fighter challenger" id="cardL"></div>
+      <div class="vs-mid">VS</div>
+      <div class="fighter" id="cardR"></div>
+    </div>
+
+    <!-- 排到一半覺得這隻放錯階層時，一鍵踢去別層 -->
+    <div class="move-tier-bar" id="challengerMoveBar">
+      <span>覺得左邊這隻放錯分類？直接移去：</span>
+      <div class="mini-btns" id="challengerMoveBtns">
+        <button data-mv="本命">本命</button>
+        <button data-mv="愛角">愛角</button>
+        <button data-mv="順手">順手</button>
+        <button data-mv="勉強">勉強</button>
+        <button data-mv="封印">封印</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="btnUndo">復原 <span class="kbd">Backspace</span></button>
+      <button class="btn primary" id="btnTie" style="background:#3B82F6;border-color:#3B82F6">🤝 差不多 (並列收工) <span class="kbd">↑</span></button>
+      <button class="btn" id="btnTop">⏫ 排本層第1 <span class="kbd">Space</span></button>
+      <button class="btn" id="btnBottom">⏬ 丟本層墊底 <span class="kbd">↓</span></button>
+    </div>
+
+    <div class="note">
+      <b>操作說明：</b><br>
+      • <b>二分法 (Binary Divide)</b>：按鍵盤 <b>← (選左邊挑戰者)</b> 或 <b>→ (選右邊守門員)</b>，範圍每次直接砍半，點 3～4 下就永久鎖定該角色位置。<br>
+      • <b>覺得角色不屬於這層？</b>直接點上方「直接移去：本命/愛角/順手...」，當場換層並跳下一隻。<br>
+      • <b>每天心情不同想微調？</b>直接在右邊看板用<b>滑鼠左鍵拖拉英雄膠囊</b>，想放哪就放哪！
+    </div>
+  </div>
+
+  <!-- 右欄：五階層自由拖移看板 + 畫筆快篩 -->
+  <div class="card">
+    <div class="card-title">
+      <span>② 五階層總覽看板（支援滑鼠自由拖拉微調順位／跨層移動）</span>
+      <input type="text" id="searchIn" placeholder="搜尋英雄名稱…" style="background:var(--bg);border:1px solid var(--line2);color:var(--text);padding:4px 9px;border-radius:6px;font-size:12px;width:150px">
+    </div>
+
+    <div class="toolbar" style="justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--muted)">點擊模式：</span>
+        <div class="seg" id="brushSeg">
+          <button class="on" data-brush="">🖐️ 滑鼠拖拉微調 (預設)</button>
+          <button data-brush="本命">🖌️ 點誰就進【本命】</button>
+          <button data-brush="愛角">🖌️ 點誰就進【愛角】</button>
+          <button data-brush="順手">🖌️ 點誰就進【順手】</button>
+          <button data-brush="勉強">🖌️ 點誰就進【勉強】</button>
+          <button data-brush="封印">🖌️ 點誰就進【封印】</button>
+        </div>
+      </div>
+      <span style="font-size:11px;color:var(--muted);font-family:var(--mono)">越靠左分數越高 · 藍框=挑戰者 · 黃框=守門員</span>
+    </div>
+
+    <div class="tier-board" id="tierBoard"></div>
+  </div>
+</div>
+
+<script>
+// Example fixture data (not a real ranking). The lab loads your own sorting from the server/localStorage.
+const SEED_PROFILE = [{"id":103,"name":"阿璃","tier":"本命","flag":"","elo":1500,"matches":0},{"id":42,"name":"庫奇","tier":"本命","flag":"","elo":1500,"matches":0},{"id":81,"name":"伊澤瑞爾","tier":"愛角","flag":"","elo":1500,"matches":0},{"id":238,"name":"劫","tier":"愛角","flag":"","elo":1500,"matches":0},{"id":145,"name":"凱莎","tier":"順手","flag":"","elo":1500,"matches":0},{"id":21,"name":"好運姐","tier":"順手","flag":"","elo":1500,"matches":0},{"id":115,"name":"希格斯","tier":"勉強","flag":"","elo":1500,"matches":0},{"id":126,"name":"杰西","tier":"勉強","flag":"","elo":1500,"matches":0},{"id":236,"name":"路西恩","tier":"封印","flag":"","elo":1500,"matches":0},{"id":25,"name":"魔甘娜","tier":"封印","flag":"","elo":1500,"matches":0}];
+const ACCOUNT_DATA = {"recentGamesCount":0,"recentByChamp":{},"recentGames":[],"mastery":[]}; // Example fixture data (not a real account).
+const ICON = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`;
+const AUTOSAVE_URL = "http://127.0.0.1:18998";
+const STORAGE_KEY = "lolafk_workbench_v4";
+
+const TIERS = [
+  ["本命", 100, 90],
+  ["愛角", 89, 75],
+  ["順手", 74, 60],
+  ["勉強", 59, 40],
+  ["封印", 39, 10]
+];
+
+const masteryMap = new Map((ACCOUNT_DATA.mastery || []).map(m => [m.championId, m]));
+const recentMap = ACCOUNT_DATA.recentByChamp || {};
+
+let currentScope = "本命";
+let activeBrush = "";
+let undoStack = [];
+let state = createDefaultStateFromList(SEED_PROFILE);
+
+function enrichChamp(c) {
+  const m = masteryMap.get(c.id);
+  const r = recentMap[String(c.id)];
+  return {
+    id: c.id,
+    name: c.name,
+    tier: (!c.tier || c.tier === "未分類") ? "勉強" : c.tier,
+    flag: c.flag || "",
+    pts: m ? m.points : 0,
+    level: m ? m.level : 0,
+    recGames: r ? r.games : 0,
+    recWins: r ? r.wins : 0,
+    // Preserve battle-PK weights from the app config; without this they are
+    // silently stripped on auto-prep / import and the app re-seeds every champion.
+    elo: Number.isFinite(c.elo) ? c.elo : null,
+    matches: Number.isFinite(c.matches) ? c.matches : 0
+  };
+}
+
+function createTierSession(champList) {
+  if (champList.length === 0) {
+    return { sorted: [], queue: [], current: null, low: 0, high: -1, clicks: 0, done: true };
+  }
+  const copy = champList.map(c => ({ ...c }));
+  const sorted = [copy[0]];
+  const queue = copy.slice(1);
+  const current = queue.shift() || null;
+  return {
+    sorted,
+    queue,
+    current,
+    low: 0,
+    high: sorted.length - 1,
+    clicks: 0,
+    done: !current
+  };
+}
+
+function createDefaultStateFromList(rawList) {
+  const enriched = rawList.map(enrichChamp);
+  const sessions = {};
+  for (const [t] of TIERS) {
+    const members = enriched.filter(c => c.tier === t);
+    sessions[t] = createTierSession(members);
+  }
+  return { sessions };
+}
+
+// Ordered list of all champions across a single tier (locked sorted + current challenger + waiting queue)
+function getTierOrderedList(t) {
+  const s = state.sessions[t];
+  if (!s) return [];
+  return [
+    ...(s.sorted || []),
+    ...(s.current ? [s.current] : []),
+    ...(s.queue || [])
+  ];
+}
+
+// Flatten all tiers into the canonical AppConfig profile array
+function buildFlatProfile() {
+  const out = [];
+  for (const [t] of TIERS) {
+    const list = getTierOrderedList(t);
+    list.forEach(c => {
+      const item = { id: c.id, name: c.name, tier: t, flag: c.flag || "" };
+      if (Number.isFinite(c.elo)) item.elo = c.elo;
+      if (Number.isFinite(c.matches) && c.matches > 0) item.matches = c.matches;
+      out.push(item);
+    });
+  }
+  return out;
+}
+
+function computeTierScores(t, hi, lo) {
+  const list = getTierOrderedList(t);
+  const scores = {};
+  const n = list.length;
+  list.forEach((c, i) => {
+    scores[c.id] = n <= 1 ? hi : Math.round(hi - (hi - lo) * (i / (n - 1)));
+  });
+  return scores;
+}
+
+// ---------- Dual Real-time Persistence (Hard Drive + LocalStorage) ----------
+function setSaveBadge(ok, msg) {
+  const el = document.getElementById("saveStatusPill");
+  if (!el) return;
+  el.className = "save-pill" + (ok ? "" : " warn");
+  el.textContent = msg;
+}
+
+async function persistNow() {
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    currentScope,
+    sessions: state.sessions,
+    profile: buildFlatProfile()
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (e) {}
+
+  const nowStr = new Date().toTimeString().slice(0, 8);
+  try {
+    const res = await fetch(AUTOSAVE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      setSaveBadge(true, `💾 已即時寫入硬碟 (${nowStr})`);
+      return;
+    }
+  } catch (e) {}
+  setSaveBadge(true, `💾 已存於瀏覽器 (${nowStr})`);
+}
+
+async function bootstrapState() {
+  // 1. Try loading from disk autosave server first
+  try {
+    const res = await fetch(AUTOSAVE_URL);
+    if (res.ok) {
+      const disk = await res.json();
+      if (disk && disk.sessions && disk.sessions["本命"]) {
+        state = { sessions: disk.sessions };
+        if (disk.currentScope) currentScope = disk.currentScope;
+        setSaveBadge(true, "💾 已從硬碟載入上次進度");
+        syncScopeButtons();
+        renderAll();
+        return;
+      }
+    }
+  } catch (e) {}
+
+  // 2. Fallback to localStorage
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.sessions && parsed.sessions["本命"]) {
+        state = { sessions: parsed.sessions };
+        if (parsed.currentScope) currentScope = parsed.currentScope;
+        setSaveBadge(true, "💾 已從瀏覽器載入上次進度");
+        syncScopeButtons();
+        renderAll();
+        return;
+      }
+    }
+  } catch (e) {}
+
+  // 3. Initial seed from rescued 194-round profile, and immediately write to disk!
+  state = createDefaultStateFromList(SEED_PROFILE);
+  await persistNow();
+  renderAll();
+}
+
+function pushUndo() {
+  undoStack.push(JSON.stringify({ currentScope, sessions: state.sessions }));
+  if (undoStack.length > 50) undoStack.shift();
+}
+
+function popUndo() {
+  if (undoStack.length === 0) return;
+  const snap = JSON.parse(undoStack.pop());
+  currentScope = snap.currentScope;
+  state.sessions = snap.sessions;
+  syncScopeButtons();
+  void persistNow();
+  renderAll();
+}
+
+// ---------- Binary Divide Engine ----------
+function currentPivotIndex(s) {
+  if (!s || s.done || !s.current) return -1;
+  return Math.floor((s.low + s.high) / 2);
+}
+
+function insertCurrentAt(s, index) {
+  s.sorted.splice(index, 0, s.current);
+  if (s.queue.length > 0) {
+    s.current = s.queue.shift();
+    s.low = 0;
+    s.high = s.sorted.length - 1;
+  } else {
+    s.current = null;
+    s.done = true;
+  }
+}
+
+function binaryChoose(action) {
+  const s = state.sessions[currentScope];
+  if (!s || s.done || !s.current) return;
+
+  pushUndo();
+  const mid = currentPivotIndex(s);
+  s.clicks += 1;
+
+  if (action === "challenger") {
+    s.high = mid - 1;
+    if (s.low > s.high) insertCurrentAt(s, s.low);
+  } else if (action === "pivot") {
+    s.low = mid + 1;
+    if (s.low > s.high) insertCurrentAt(s, s.low);
+  } else if (action === "tie") {
+    insertCurrentAt(s, mid + 1);
+  } else if (action === "top") {
+    insertCurrentAt(s, 0);
+  } else if (action === "bottom") {
+    insertCurrentAt(s, s.sorted.length);
+  }
+
+  void persistNow();
+  renderAll();
+}
+
+// Move any champion (including the active challenger!) to another tier
+function moveChampionToTier(champId, targetTier, targetIndex = null) {
+  pushUndo();
+  let foundChamp = null;
+  let srcTier = null;
+  let srcOrderIdx = -1; // index within the tier's ordered list (sorted + current + queue) before removal
+
+  for (const [t] of TIERS) {
+    const s = state.sessions[t];
+    if (!s) continue;
+    const sIdx = s.sorted.findIndex(c => c.id === champId);
+    if (sIdx >= 0) {
+      [foundChamp] = s.sorted.splice(sIdx, 1);
+      srcTier = t;
+      srcOrderIdx = sIdx;
+      if (s.current) {
+        s.low = 0;
+        s.high = Math.max(0, s.sorted.length - 1);
+        if (s.sorted.length === 0) {
+          insertCurrentAt(s, 0);
+        }
+      }
+      break;
+    }
+    if (s.current && s.current.id === champId) {
+      foundChamp = s.current;
+      srcTier = t;
+      srcOrderIdx = s.sorted.length;
+      if (s.queue.length > 0) {
+        s.current = s.queue.shift();
+        s.low = 0;
+        s.high = Math.max(0, s.sorted.length - 1);
+      } else {
+        s.current = null;
+        s.done = true;
+      }
+      break;
+    }
+    const qIdx = s.queue.findIndex(c => c.id === champId);
+    if (qIdx >= 0) {
+      [foundChamp] = s.queue.splice(qIdx, 1);
+      srcTier = t;
+      srcOrderIdx = s.sorted.length + (s.current ? 1 : 0) + qIdx;
+      break;
+    }
+  }
+
+  if (!foundChamp) return;
+  foundChamp.tier = targetTier;
+
+  const dest = state.sessions[targetTier];
+  if (!dest) return;
+
+  if (targetIndex != null) {
+    // User explicitly dragged to a position on the board -> lock it into `sorted` at that position.
+    // Same-tier moves: drop indexes were measured before the dragged chip was
+    // removed, so positions after the source shift down by one.
+    let idx = targetIndex;
+    if (srcTier === targetTier && srcOrderIdx >= 0 && srcOrderIdx < idx) idx -= 1;
+    const clamped = Math.max(0, Math.min(idx, dest.sorted.length));
+    dest.sorted.splice(clamped, 0, foundChamp);
+    if (dest.current) {
+      dest.low = 0;
+      dest.high = dest.sorted.length - 1;
+    }
+  } else {
+    // Moved via button or brush -> if dest is already done, put at end of sorted (or queue for binary positioning)
+    if (dest.done) {
+      dest.current = foundChamp;
+      dest.low = 0;
+      dest.high = Math.max(0, dest.sorted.length - 1);
+      dest.done = false;
+      if (dest.sorted.length === 0) {
+        insertCurrentAt(dest, 0);
+      }
+    } else {
+      dest.queue.push(foundChamp);
+    }
+  }
+
+  void persistNow();
+  renderAll();
+}
+
+// ---------- Initial Account Data Auto-Prep ----------
+function runAccountAutoPrep() {
+  pushUndo();
+  const wRec = Number(document.getElementById("wRec").value) / 100;
+  const wMas = Number(document.getElementById("wMas").value) / 100;
+  const wTime = Number(document.getElementById("wTime").value) / 100;
+  const nBen = Math.max(3, Number(document.getElementById("inBen").value) || 16);
+  const nAi = Math.max(5, Number(document.getElementById("inAi").value) || 36);
+  const nShun = Math.max(5, Number(document.getElementById("inShun").value) || 55);
+
+  const maxPts = Math.max(1, ...Array.from(masteryMap.values()).map(m => m.points || 0));
+  const times = Array.from(masteryMap.values()).map(m => m.lastPlayTime || 0).filter(t => t > 0);
+  const maxTime = times.length ? Math.max(...times) : 1;
+  const minTime = times.length ? Math.min(...times) : 0;
+
+  const allChamps = buildFlatProfile().map(enrichChamp);
+  const scored = allChamps.map(c => {
+    const recScore = c.recGames > 0
+      ? Math.min(1.0, (c.recGames / 3.0) * 0.78 + (c.recWins / c.recGames) * 0.22)
+      : 0;
+    const masScore = c.pts > 0
+      ? 0.45 * (Math.log10(c.pts + 100) / Math.log10(maxPts + 100)) + 0.55 * Math.pow(c.pts / maxPts, 0.55)
+      : 0;
+    const m = masteryMap.get(c.id);
+    const r = recentMap[String(c.id)];
+    const lastT = Math.max(m?.lastPlayTime || 0, r?.lastGameCreation || 0);
+    const timeScore = lastT > minTime && maxTime > minTime
+      ? Math.pow((lastT - minTime) / (maxTime - minTime), 1.6)
+      : 0;
+    const hasData = c.pts > 0 || c.recGames > 0;
+    const comp = hasData
+      ? (wRec * recScore + wMas * masScore + wTime * timeScore) / Math.max(0.01, wRec + wMas + wTime)
+      : -1;
+    return { ...c, comp };
+  });
+
+  scored.sort((a, b) => b.comp - a.comp || b.pts - a.pts || a.id - b.id);
+  scored.forEach((c, i) => {
+    if (c.comp < 0) c.tier = "封印";
+    else if (i < nBen) c.tier = "本命";
+    else if (i < nBen + nAi) c.tier = "愛角";
+    else if (i < nBen + nAi + nShun) c.tier = "順手";
+    else c.tier = "勉強";
+  });
+
+  state = createDefaultStateFromList(scored);
+  void persistNow();
+  renderAll();
+}
+
+// ---------- Rendering ----------
+function syncScopeButtons() {
+  document.querySelectorAll("#scopeSeg button").forEach(b => {
+    b.classList.toggle("on", b.dataset.scope === currentScope);
+  });
+}
+
+function renderAll() {
+  const s = state.sessions[currentScope];
+  const totalCount = s ? s.sorted.length + (s.current ? 1 : 0) + s.queue.length : 0;
+  const lockedCount = s ? s.sorted.length : 0;
+  const pct = totalCount > 0 ? Math.round((lockedCount / totalCount) * 100) : 100;
+
+  document.getElementById("clickCountBadge").textContent = `本層已點 ${s?.clicks || 0} 下`;
+  document.getElementById("progBar").style.width = `${s?.done ? 100 : pct}%`;
+  document.getElementById("progText").textContent = s?.done
+    ? `🎉 【${currentScope}】${totalCount} 隻已 100% 定位完成`
+    : `已鎖定 ${lockedCount} / ${totalCount} 隻 (${pct}%)`;
+
+  const mid = currentPivotIndex(s);
+  const statusBox = document.getElementById("binaryStatusBox");
+  const elL = document.getElementById("cardL");
+  const elR = document.getElementById("cardR");
+  const moveBar = document.getElementById("challengerMoveBar");
+
+  if (!s || s.done || !s.current) {
+    statusBox.innerHTML = `<span style="color:var(--ok);font-weight:600">✅ 【${currentScope}】共 ${totalCount} 隻已全數定位完畢！</span><span>可切換上方頁籤排下一層，或在右側直接拖拉微調</span>`;
+    elL.innerHTML = `<div class="nm" style="color:var(--ok)">🎉 【${currentScope}】定位完成</div><div class="stats">若想重新用二分法洗牌本層，可點右上「↺ 重排本層」；或直接在右邊滑鼠拖拉微調</div>`;
+    elR.innerHTML = `<div class="nm">—</div>`;
+    moveBar.style.display = "none";
+  } else {
+    moveBar.style.display = "flex";
+    const rangeLen = s.high - s.low + 1;
+    const maxStepsLeft = Math.ceil(Math.log2(rangeLen + 1));
+    const pivot = s.sorted[mid];
+
+    statusBox.innerHTML = `
+      <span>定位挑戰者：<b>【${s.current.name}】</b>（比對區間 <b>#${s.low + 1} ～ #${s.high + 1}</b>）</span>
+      <span style="font-family:var(--mono);color:var(--warn)">最多再 <b>${maxStepsLeft}</b> 下鎖定</span>
+    `;
+
+    const fmtMeta = (c) => {
+      const kPts = c.pts >= 1000 ? `${(c.pts/1000).toFixed(0)}k` : `${c.pts || 0}`;
+      return `近期 <b>${c.recGames || 0}場</b> (${c.recWins || 0}勝) · 專精 Lv.${c.level || 0} (${kPts})`;
+    };
+
+    elL.innerHTML = `
+      <span class="role-tag">🆕 待定位挑戰者 (剩 ${s.queue.length + 1} 隻)</span>
+      <img src="${ICON(s.current.id)}" alt="">
+      <div class="nm">${s.current.name}</div>
+      <div class="stats">${fmtMeta(s.current)}</div>
+      <div class="delta">👈 選我：排到 #${mid + 1}【${pivot.name}】前面 (←)</div>
+    `;
+
+    elR.innerHTML = `
+      <span class="role-tag pivot">🛡️ 區間正中間守門員 (#${mid + 1})</span>
+      <img src="${ICON(pivot.id)}" alt="">
+      <div class="nm">${pivot.name}</div>
+      <div class="stats">${fmtMeta(pivot)}</div>
+      <div class="delta" style="color:var(--warn)">👉 選我：【${s.current.name}】往 #${mid + 2} 後面排 (→)</div>
+    `;
+
+    document.querySelectorAll("#challengerMoveBtns button").forEach(btn => {
+      btn.style.display = btn.dataset.mv === currentScope ? "none" : "";
+    });
+  }
+
+  renderTierBoard();
+}
+
+function renderTierBoard() {
+  const board = document.getElementById("tierBoard");
+  const q = (document.getElementById("searchIn")?.value || "").trim();
+
+  board.innerHTML = TIERS.map(([t, hi, lo]) => {
+    const sess = state.sessions[t];
+    const list = getTierOrderedList(t);
+    const scores = computeTierScores(t, hi, lo);
+    const isCurrentScope = t === currentScope;
+    const mid = isCurrentScope ? currentPivotIndex(sess) : -1;
+
+    return `
+      <div class="tier-row ${isCurrentScope ? "active-scope" : ""}" data-t="${t}">
+        <div class="tier-head">
+          <span>${t}</span>
+          <small>${lo}–${hi}分</small>
+          <small>${list.length} 隻</small>
+        </div>
+        <div class="tier-drop" data-t="${t}">
+          ${list.map((c, idx) => {
+            const isLocked = idx < (sess?.sorted?.length || 0);
+            const isChallenger = sess?.current && sess.current.id === c.id;
+            const isPivot = isCurrentScope && !sess?.done && isLocked && idx === mid;
+            const inRange = isCurrentScope && !sess?.done && isLocked && idx >= sess.low && idx <= sess.high;
+            const hide = q && !c.name.includes(q);
+            const kPts = c.pts >= 1000 ? `${Math.round(c.pts/1000)}k` : `${c.pts || 0}`;
+
+            const cls = [
+              "chip",
+              isPivot ? "is-pivot" : "",
+              isChallenger ? "is-challenger" : "",
+              inRange ? "in-binary-range" : "",
+              !isLocked && !isChallenger ? "unranked-in-session" : "",
+              hide ? "hide" : ""
+            ].filter(Boolean).join(" ");
+
+            return `
+              <div class="${cls}" draggable="true" data-id="${c.id}" data-tier="${t}" data-idx="${idx}"
+                   title="${c.name} (#${idx + 1}, ${scores[c.id]}分) · 近期 ${c.recGames || 0}場 · 專精 Lv.${c.level || 0} (${kPts}) — 可直接滑鼠拖移換位">
+                <img src="${ICON(c.id)}" alt="">
+                <span class="rk-num">#${idx + 1}</span>
+                <span>${c.name}</span>
+                <span class="sc">${scores[c.id]}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// ---------- Drag & Drop + Brush Click on Tier Board ----------
+let dragChampId = null;
+const boardEl = document.getElementById("tierBoard");
+
+boardEl.addEventListener("dragstart", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  dragChampId = Number(chip.dataset.id);
+  chip.classList.add("dragging");
+});
+boardEl.addEventListener("dragend", () => {
+  dragChampId = null;
+  boardEl.querySelectorAll(".over, .dragging").forEach(el => el.classList.remove("over", "dragging"));
+});
+boardEl.addEventListener("dragover", (e) => {
+  const drop = e.target.closest(".tier-drop");
+  if (!drop) return;
+  e.preventDefault();
+  boardEl.querySelectorAll(".tier-drop.over").forEach(el => el !== drop && el.classList.remove("over"));
+  drop.classList.add("over");
+});
+boardEl.addEventListener("drop", (e) => {
+  const drop = e.target.closest(".tier-drop");
+  if (!drop || dragChampId == null) return;
+  e.preventDefault();
+  const targetTier = drop.dataset.t;
+  const targetChip = e.target.closest(".chip");
+
+  // Dropping a chip onto itself is a cancel, not a move
+  if (targetChip && Number(targetChip.dataset.id) === dragChampId) return;
+
+  const dest = state.sessions[targetTier];
+  let insertIndex = dest ? dest.sorted.length : 0;
+  if (targetChip) {
+    const rect = targetChip.getBoundingClientRect();
+    const after = e.clientX > rect.left + rect.width / 2;
+    const chipIdx = Number(targetChip.dataset.idx);
+    insertIndex = chipIdx + (after ? 1 : 0);
+  }
+  moveChampionToTier(dragChampId, targetTier, insertIndex);
+});
+
+boardEl.addEventListener("click", (e) => {
+  if (!activeBrush) return;
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  const id = Number(chip.dataset.id);
+  if (id > 0) {
+    moveChampionToTier(id, activeBrush, null);
+  }
+});
+
+// ---------- Controls & Shortcuts ----------
+document.getElementById("cardL").addEventListener("click", () => binaryChoose("challenger"));
+document.getElementById("cardR").addEventListener("click", () => binaryChoose("pivot"));
+document.getElementById("btnTie").addEventListener("click", () => binaryChoose("tie"));
+document.getElementById("btnTop").addEventListener("click", () => binaryChoose("top"));
+document.getElementById("btnBottom").addEventListener("click", () => binaryChoose("bottom"));
+document.getElementById("btnUndo").addEventListener("click", () => popUndo());
+
+document.getElementById("challengerMoveBtns").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !b.dataset.mv) return;
+  const s = state.sessions[currentScope];
+  if (s && s.current) {
+    moveChampionToTier(s.current.id, b.dataset.mv, null);
+  }
+});
+
+document.getElementById("scopeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !b.dataset.scope) return;
+  currentScope = b.dataset.scope;
+  syncScopeButtons();
+  void persistNow();
+  renderAll();
+});
+
+document.getElementById("btnRestartTierBinary").addEventListener("click", () => {
+  pushUndo();
+  const list = getTierOrderedList(currentScope);
+  state.sessions[currentScope] = createTierSession(list);
+  void persistNow();
+  renderAll();
+});
+
+document.getElementById("brushSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  activeBrush = b.dataset.brush || "";
+  document.querySelectorAll("#brushSeg button").forEach(x => x.classList.toggle("on", x === b));
+});
+
+document.getElementById("searchIn").addEventListener("input", renderTierBoard);
+
+document.getElementById("btnTogglePrep").addEventListener("click", () => {
+  document.getElementById("prepDrawer").classList.toggle("open");
+});
+
+["wRec", "wMas", "wTime", "inBen", "inAi", "inShun"].forEach(id => {
+  document.getElementById(id)?.addEventListener("input", () => {
+    document.getElementById("lblWRec").textContent = document.getElementById("wRec").value + "%";
+    document.getElementById("lblWMas").textContent = document.getElementById("wMas").value + "%";
+    document.getElementById("lblWTime").textContent = document.getElementById("wTime").value + "%";
+    document.getElementById("lblCounts").textContent =
+      `${document.getElementById("inBen").value} / ${document.getElementById("inAi").value} / ${document.getElementById("inShun").value}`;
+  });
+});
+document.getElementById("btnRunAutoPrep").addEventListener("click", runAccountAutoPrep);
+
+document.getElementById("btnExportJson").addEventListener("click", () => {
+  const profile = buildFlatProfile();
+  const cfg = {
+    master_enabled: true,
+    accent_color: "crimson",
+    auto_accept: true,
+    accept_delay_sec: 1.5,
+    accept_modes: ["ARAM", "Mayhem"],
+    accept_notify: "sound",
+    aram_settings: {
+      auto_card_select: true,
+      card_select_delay_sec: 1.5,
+      card_select_strategy: "highest_score",
+      auto_bench_swap: true,
+      bench_diff_threshold: 10,
+      lock_stop_bench: true,
+      stop_bench_remaining_sec: 5,
+      auto_trade: true,
+      trade_accept_diff: 10,
+      trade_reject_tiers: ["本命"],
+      friend_trade_policy: "manual"
+    },
+    mayhem_settings: {
+      auto_card_select: true,
+      card_select_delay_sec: 1.5,
+      card_select_strategy: "highest_score",
+      auto_bench_swap: true,
+      bench_diff_threshold: 10,
+      lock_stop_bench: true,
+      stop_bench_remaining_sec: 5,
+      auto_trade: true,
+      trade_accept_diff: 10,
+      trade_reject_tiers: ["本命"],
+      friend_trade_policy: "manual"
+    },
+    auto_chat_on_swap: true,
+    chat_delay_sec: 1.0,
+    chat_messages: ["謝啦！{new} 交給我", "感謝換角，這把順風～", "{old} 給你，{new} 我來 🙏"],
+    chat_on_accept_teammate: true,
+    chat_on_teammate_accept_mine: true,
+    ff_reminder: false,
+    ff_time_aram: "08:00",
+    ff_time_mayhem: "08:00",
+    ff_kill_diff_threshold: 0,
+    ff_cooldown_reminder: false,
+    ff_copy_clipboard: false,
+    ff_play_sound: true,
+    ff_desktop_notify: false,
+    client_close_action: "wait",
+    close_to_tray: true,
+    auto_start: false,
+    aram_profile: profile,
+    mayhem_profile: profile
+  };
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `aram-assistant-config-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+});
+
+document.getElementById("btnImportJsonTrigger").addEventListener("click", () => {
+  document.getElementById("importFileIn").click();
+});
+document.getElementById("importFileIn").addEventListener("change", async (e) => {
+  const f = e.target.files?.[0];
+  if (!f) return;
+  try {
+    const parsed = JSON.parse(await f.text());
+    const prof = parsed.aram_profile || parsed.profile || parsed;
+    if (Array.isArray(prof) && prof.length > 0) {
+      pushUndo();
+      state = createDefaultStateFromList(prof);
+      await persistNow();
+      renderAll();
+    }
+  } catch (err) {
+    alert("匯入 JSON 失敗：" + String(err));
+  } finally {
+    e.target.value = "";
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); binaryChoose("challenger"); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); binaryChoose("pivot"); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); binaryChoose("tie"); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); binaryChoose("bottom"); }
+  else if (e.key === " ") { e.preventDefault(); binaryChoose("top"); }
+  else if (e.key === "Backspace") { e.preventDefault(); popUndo(); }
+});
+
+void bootstrapState();
+</script>
+</body>
+</html>

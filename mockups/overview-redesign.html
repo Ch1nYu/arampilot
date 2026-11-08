@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>總覽頁改版草圖（討論用，非實際程式）</title>
+<style>
+  :root {
+    --bg: #0B0B0E; --panel: #141419; --panel2: #1C1C24;
+    --line: #272732; --line2: #353545;
+    --text: #F2F2F5; --muted: #9494A3; --dim: #5E5E70;
+    --accent: #EF4444; --ok: #34D399; --warn: #F59E0B; --info: #60A5FA;
+    --purple: #C084FC;
+    --mono: "JetBrains Mono", Consolas, monospace;
+    --font: "Inter", "Noto Sans TC", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; padding: 18px 24px 60px; max-width: 1280px; margin: 0 auto; user-select: none; }
+  .tag-draft { display:inline-block; background: rgba(245,158,11,0.16); color: var(--warn); border: 1px solid rgba(245,158,11,.4); border-radius: 6px; padding: 3px 8px; font-size: 11px; margin-left: 8px; }
+  .shell { display: grid; grid-template-columns: 168px 1fr; gap: 16px; margin-top: 14px; }
+  aside { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 8px; }
+  .nav { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; color: var(--muted); margin-bottom: 2px; }
+  .nav.on { background: var(--panel2); color: var(--text); font-weight: 600; }
+  .nav-sec { font-size: 10px; color: var(--dim); margin: 12px 10px 4px; letter-spacing: .08em; }
+  .topbar { display: flex; align-items: center; gap: 10px; }
+  .pill { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); }
+  .pill .dot { color: var(--ok); }
+  h1 { font-size: 20px; margin: 14px 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .badge { font-size: 11px; color: var(--ok); }
+  .badge i { color: var(--accent); font-style: normal; }
+  .steps { display: flex; align-items: center; gap: 0; margin: 8px 0 12px; }
+  .step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+  .step .d { width: 9px; height: 9px; border-radius: 50%; background: var(--line2); }
+  .step.done { color: var(--muted); } .step.done .d { background: var(--accent); }
+  .step.now { color: var(--accent); font-weight: 700; } .step.now .d { background: var(--accent); box-shadow: 0 0 0 3px rgba(239,68,68,.25); }
+  .bar { flex: 1; height: 2px; background: var(--line); margin: 0 8px; }
+  .bar.done { background: var(--accent); }
+  .cols { display: grid; grid-template-columns: 190px 1fr 240px; gap: 12px; }
+  .col { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .col .lbl { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .champ { display: flex; align-items: center; gap: 10px; }
+  .champ img { width: 52px; height: 52px; border-radius: 26px; object-fit: cover; }
+  .champ .nm { font-size: 16px; font-weight: 700; color: var(--info); }
+  .champ .note { font-size: 11px; color: var(--accent); }
+  .hold { display:inline-block; font-size: 10px; padding: 2px 7px; border-radius: 999px; border:1px solid rgba(245,158,11,.5); color: var(--warn); background: rgba(245,158,11,.12); margin-top: 6px; }
+  .bench-row { display: flex; align-items:center; gap: 9px; padding: 6px 8px; border-radius: 8px; margin-bottom: 4px; background: var(--panel); border: 1px solid transparent; }
+  .bench-row.best { border-color: rgba(239,68,68,.55); }
+  .bench-row img { width: 30px; height: 30px; border-radius: 15px; object-fit: cover; }
+  .bench-row .nm { font-size: 13px; font-weight: 600; }
+  .bench-row .meta { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+  .bench-row .diff { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ok); font-weight: 600; }
+  .btn { background: var(--accent); color:#fff; border:1px solid var(--accent); border-radius: 7px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+  .btn.ghost { background: var(--panel2); border-color: var(--line2); color: var(--muted); }
+  .ban { font-size: 10px; color: var(--dim); }
+  .trader { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .chip { font-size: 10px; padding: 2px 7px; border-radius: 999px; }
+  .chip.friend { background: rgba(239,68,68,.14); color: var(--accent); border: 1px solid rgba(239,68,68,.45); }
+  .chip.stranger { background: rgba(96,165,250,.12); color: var(--info); border: 1px solid rgba(96,165,250,.35); }
+  .verdict { font-size: 10px; color: var(--muted); border-top: 1px dashed var(--line2); padding-top: 6px; margin-top: 6px; }
+  .tiles { display:grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .tile .t { font-size: 13px; font-weight: 600; display:flex; justify-content: space-between; }
+  .tile .d { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .sw { color: var(--accent); font-weight: 700; }
+  .log { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; }
+  .log .t { color: var(--dim); margin-right: 6px; }
+  .tag { padding: 1px 5px; border-radius: 4px; margin-right: 6px; font-size: 10px; }
+  .tag.act { background: rgba(52,211,153,.14); color: var(--ok); }
+  .tag.skip { background: rgba(245,158,11,.14); color: var(--warn); }
+  .tag.sys { background: rgba(96,165,250,.14); color: var(--info); }
+  ul.notes { margin: 6px 0 0 16px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  ul.notes b { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="color:var(--accent);font-weight:800">◆ ARAM ASSISTANT</span>
+    <span class="pill"><span class="dot">●</span> LCU 已連線 (60243)</span>
+    <span class="pill">選角 · Mayhem</span>
+    <span class="tag-draft">草圖 v1（設計討論用，非實際程式）</span>
+  </div>
+  <h1>總覽</h1>
+  <div class="sub">目前套用模式：Mayhem（queue 2400）。進入 ARAM 時自動切換。</div>
+</header>
+
+<div class="shell">
+  <aside>
+    <div class="nav on">⌂ 總覽</div>
+    <div class="nav-sec">自動化</div>
+    <div class="nav">⇄ 對戰與選角</div>
+    <div class="nav">⇄ 換角規則</div>
+    <div class="nav">◯ 聊天訊息</div>
+    <div class="nav">⚑ 投降提醒</div>
+    <div class="nav-sec">英雄</div>
+    <div class="nav">☰ 英雄優先序</div>
+    <div class="nav">VS 二選一大比拚</div>
+    <div class="nav-sec">系統</div>
+    <div class="nav">▤ 執行紀錄</div>
+    <div class="nav">⚙ 一般設定</div>
+  </aside>
+
+  <main>
+    <div class="card">
+      <div class="card-head"><span>目前對戰狀態</span><span class="badge"><i>●</i> 選角 · Mayhem</span></div>
+      <div class="steps">
+        <span class="step done"><span class="d"></span>大廳</span><span class="bar done"></span>
+        <span class="step done"><span class="d"></span>配對中</span><span class="bar done"></span>
+        <span class="step done"><span class="d"></span>接受對戰</span><span class="bar done"></span>
+        <span class="step now"><span class="d"></span>選角</span><span class="bar"></span>
+        <span class="step"><span class="d"></span>遊戲中</span>
+      </div>
+      <div class="cols">
+        <div class="col">
+          <div class="lbl">我的英雄</div>
+          <div class="champ">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/68.png" alt="藍寶">
+            <div><div class="nm">藍寶</div><div class="note">愛角 83 · 選角中</div></div>
+          </div>
+          <span class="hold">⚠️ 手動保護中：後端判定不會換走（你手動換過）</span>
+          <div class="verdict">後端判定：保留藍寶（手動選擇）</div>
+        </div>
+
+        <div class="col">
+          <div class="lbl">板凳（全部，依分數高→低排）</div>
+          <div class="bench-row best">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/145.png" alt="凱莎">
+            <div><div class="nm">凱莎</div><div class="meta">本命 99</div></div>
+            <span class="diff">+16</span><button class="btn">搶角</button>
+          </div>
+          <div class="bench-row">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/21.png" alt="好運姐">
+            <div><div class="nm">好運姐</div><div class="meta">本命 98</div></div>
+            <span class="diff">+15</span><button class="btn">搶角</button>
+          </div>
+          <div class="bench-row">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/42.png" alt="庫奇">
+            <div><div class="nm">庫奇</div><div class="meta">本命 94</div></div>
+            <span class="diff">+11</span><button class="btn">搶角</button>
+          </div>
+          <div class="bench-row">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/13.png" alt="雷茲">
+            <div><div class="nm">雷茲</div><div class="meta">本命 91 · 未達門檻（10）只手動</div></div>
+            <span class="diff" style="color:var(--muted)">+8</span><button class="btn">搶角</button>
+          </div>
+          <div class="bench-row">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/103.png" alt="阿璃">
+            <div><div class="nm">阿璃</div><div class="meta">愛角 88 · 未達門檻只手動</div></div>
+            <span class="diff" style="color:var(--muted)">+5</span><button class="btn">搶角</button>
+          </div>
+          <div class="bench-row">
+            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/101.png" alt="齊勒斯">
+            <div><div class="nm">齊勒斯</div><div class="meta">封印 39 · 不搶</div></div>
+            <span class="ban">不搶</span>
+          </div>
+          <div class="verdict">點「搶角」立刻送換角 API；伺服器鎖定中會顯示錯誤（設計選項：是否自動連送到解鎖）。後端判定：刪去——本局手動 hold，自動不會換。</div>
+        </div>
+
+        <div class="col">
+          <div class="lbl">隊友換角請求</div>
+          <div class="trader">
+            <span class="chip friend">組排/好友</span><b>阿哲 #示範</b>
+          </div>
+          <div style="font-size:12px;margin-bottom:8px">想用<b style="color:var(--info)">雷茲</b>換你的<b style="color:var(--warn)">藍寶</b><br><span style="font-family:var(--mono);font-size:11px;color:var(--muted)">分差 +18 · 達門檻</span></div>
+          <div style="display:flex;gap:6px"><button class="btn">同意</button><button class="btn ghost">拒絕</button></div>
+          <div class="verdict">後端判定：manual（是你決定換不換）<br>好友 manual 永遠優先於拒絕階級</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span>最近執行紀錄</span><span class="pill">查看完整紀錄 →</span></div>
+      <div class="log"><span class="t">18:40:11</span><span class="tag sys">系統</span>換角請求識別 — cell3 組排/好友 · friend_policy=manual（示範行）</div>
+      <div class="log"><span class="t">18:41:02</span><span class="tag skip">略過</span>略過搶板凳 — 玩家已手動選擇英雄，保留手動選擇（示範行）</div>
+      <div class="log"><span class="t">18:42:33</span><span class="tag act">執行</span>已從板凳秒換偏好英雄 — 🎯 板凳英雄【雷茲】分差 +18 達標（示範行）</div>
+    </div>
+  </main>
+</div>
+
+<div class="card">
+  <div class="card-head">設計說明與未決問題（討論用）</div>
+  <ul class="notes">
+    <li><b>顯示與判定對齊</b>：卡片不再由前端獨立計算，後端把判定結果（含 skip 理由/換角分類/手動 hold）一併送來渲染。實作需要：後端補一個 bench/trade 狀態事件（分類已在 ad179e9 記入 log，何時改 UI 請看你拍板）。</li>
+    <li><b>板凳全列</b>：資料已在前端 state，改版只改渲染。要不要⛔/封印列也顯示「不搶」說明（草圖如此）？</li>
+    <li><b>搶角按鈕</b>：按下直接送一次 POST；伺服器 3 秒鎖定擋下會顯示錯誤。設計選項：要不要失敗後自動連送到解鎖（需要後端小改）？請你選。</li>
+    <li><b>換角卡名字</b>：需要從 session 隊員欄位拿名字，實作時確認欄位名；拿不到先顯示 cell 編號。</li>
+    <li><b>tile 已移除（實作完）</b>：總覽不再重複顯示自動化開關；所有控制都收在各自的頁面（自動接受/選卡/搶板凳在「對戰與選角」，投降提醒在「投降提醒」頁且複製已關）。「換角後發話」仍保留在「聊天訊息」頁，但不在總覽顯示。</li>
+    <li><b>手動保護</b>：保留現行語意（手動改角 → 整場不自動換走）。草圖在「我的英雄」卡加示範 chip。</li>
+  </ul>
+</div>
+
+</body>
+</html>
