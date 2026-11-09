@@ -312,3 +312,12 @@ python mockups/autosave_server.py --port 18999 --root <temp_dir> --no-appdata
 - 動到前端或 Rust 共用模組：跑 §7 兩組驗證；只動 `mockups/`：至少 smoke test 受影響頁面。
 - Commit：Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:`），一個里程碑一個 commit；本 repo 無 remote，不推送。
 - 使用者反饋的缺陷一律視為最高優先，修完把根因寫回本檔對應段落。
+
+---
+
+## 9. 第 9 輪交接（2026-11-09）
+
+- **前端改版（B1）已正式實作並驗證**：導覽 9 項收斂為 5 項（總覽／自動化／英雄／紀錄／設定），自動化四頁（對戰與選角／換角規則／換角發話／投降提醒）合併為一頁六區塊；總覽改主視覺放大、不對稱排版、換角請求只在待手動決定時出現 alert banner、紀錄只剩一行；設定控件統一幾何（同高分段控件、統一滑桿、數值欄等寬）；拿掉副敘事（後端判定等）、版本號、底部重複說明。滑桿填色已用 `--p` 漸層對齊圓柄中心並實測正確。
+- **產品命名**：「聊天訊息」改「換角發話」；投降提醒誠實定位為僅提醒（Riot 擋貼上，無法自動送）。
+- **Dev 環境**：`tauri.conf.json` devUrl 與 `vite.config.ts` port 已對齊 1421；Windows `windows_subsystem` 改恒隱藏（dev 版也不再彈 console）。後端邏輯零改動；設定欄位結構不變。
+- **下一步**：B2（`main.ts` 約 2600 行拆模組）未開工；push 到 GitHub 前跑 `docs/REBUILD.md` 清單。
