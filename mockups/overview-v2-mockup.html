@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>總覽第一性原理 Mockup（1040×680）</title>
+<style>
+  :root {
+    --page: #08080A; --bg: #0E0E11; --side: #0E0E11;
+    --panel: #15151A; --panel2: #1D1D24;
+    --line: #262630; --line2: #32323F;
+    --text: #F0F0F3; --muted: #8E8E9B; --dim: #575765;
+    --accent: #EF4444; --ok: #34D399; --warn: #E5A93C; --info: #60A5FA;
+    --radius: 10px; --radius-pill: 999px;
+    --font: "Inter", "Noto Sans TC", sans-serif;
+    --mono: "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--page); color: var(--text); font-family: var(--font); font-size: 14px; padding: 24px; }
+  .screen-label { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .12em; margin: 28px 0 8px; }
+  .window { width: 1040px; height: 680px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+
+  .titlebar { height: 44px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--side); }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .04em; font-size: 13px; }
+  .brand svg { width: 18px; height: 18px; color: var(--accent); }
+  .status { display: flex; gap: 6px; margin-left: 12px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: 11px; border: 1px solid var(--line2); color: var(--muted); border-radius: var(--radius-pill); white-space: nowrap; }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .pill.account .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .pill.connected .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .winctl { margin-left: auto; display: flex; align-items: center; gap: 18px; color: var(--muted); }
+  .winctl svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.2; }
+
+  .body { display: flex; flex: 1; min-height: 0; }
+  .sidebar { width: 168px; flex: none; background: var(--side); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .nav { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 7px; color: var(--dim); font-size: 13px; cursor: pointer; user-select: none; }
+  .nav:hover { color: var(--muted); }
+  .nav.on { background: var(--panel2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+  .nav svg { width: 15px; height: 15px; flex: none; }
+  .side-foot { margin-top: auto; padding: 12px 10px 2px; border-top: 1px solid var(--line); }
+  .side-toggle { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+  .tg { width: 36px; height: 20px; border-radius: 999px; background: var(--line2); position: relative; flex: none; cursor: pointer; transition: background .15s; }
+  .tg::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .tg.on { background: var(--accent); }
+  .tg.on::after { left: 19px; }
+
+  .main { flex: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .page-head { display: flex; align-items: baseline; justify-content: space-between; }
+  .page-head h1 { font-size: 20px; font-weight: 700; }
+  .phase-now { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .phase-now i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+  .progress { display: flex; gap: 6px; }
+  .progress .seg { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); }
+  .progress .seg.done { background: var(--ok); }
+  .progress .seg.now { background: var(--accent); box-shadow: 0 0 10px rgba(239,68,68,.55); }
+  .progress-labels { display: flex; gap: 6px; margin-top: 6px; }
+  .progress-labels span { flex: 1; font-size: 10px; color: var(--dim); text-align: center; }
+  .progress-labels span.now { color: var(--text); font-weight: 600; }
+
+  /* Action-needed banner: only rendered when a manual decision is pending */
+  .alert { display: flex; align-items: center; gap: 16px; background: rgba(239,68,68,.07); border: 1px solid rgba(239,68,68,.35); border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 16px; }
+  .alert .who { display: flex; align-items: center; gap: 10px; }
+  .alert .who img { width: 32px; height: 32px; border-radius: 8px; }
+  .alert .who .tx { font-size: 14px; }
+  .alert .who .tx b { font-weight: 700; }
+  .alert .spacer { flex: 1; }
+  .alert .btn { font-size: 14px; padding: 10px 22px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); cursor: pointer; user-select: none; font-weight: 600; }
+  .alert .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .alert .btn.done { opacity: .5; pointer-events: none; }
+
+  /* My champion: compact summary strip (reference, not hero) */
+  .me { display: flex; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
+  .me img.avatar { width: 48px; height: 48px; border-radius: 10px; background: var(--panel2) center/cover; flex: none; }
+  .me .nm { font-size: 18px; font-weight: 700; }
+  .me .meta { font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .me .spells { margin-left: auto; display: flex; gap: 8px; }
+  .spell { display: flex; align-items: center; gap: 7px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px 5px 5px; font-size: 12px; }
+  .spell img { width: 24px; height: 24px; border-radius: 6px; }
+  .spell .key { font-family: var(--mono); font-size: 11px; color: var(--text); border: 1px solid var(--line2); padding: 2px 6px; border-radius: 4px; }
+  .tag { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--ok); color: var(--ok); white-space: nowrap; }
+
+  /* Bench: the decision surface — full width, full list, no scrollbar */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .card h3 { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .06em; margin-bottom: 6px; }
+  .card h3 .sub { float: right; font-weight: 400; color: var(--dim); letter-spacing: 0; }
+  .bench-row { display: flex; align-items: center; gap: 12px; padding: 8px 8px; border-radius: 8px; }
+  .bench-row img { width: 30px; height: 30px; border-radius: 7px; }
+  .bench-row .nm { font-size: 15px; font-weight: 600; }
+  .bench-row .delta { margin-left: auto; font-family: var(--mono); font-size: 14px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .bench-row.hot { background: rgba(239,68,68,.08); box-shadow: inset 3px 0 0 var(--accent); }
+  .bench-row.hot .delta { color: var(--accent); font-weight: 700; }
+  .bench-row .will { font-size: 11px; color: var(--accent); margin-left: 8px; }
+  .bench-cap { margin-top: 6px; padding-top: 10px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+
+  .log-line { display: flex; align-items: center; gap: 12px; padding: 9px 16px; background: transparent; border: 1px solid var(--line); border-radius: var(--radius); font-size: 12px; }
+  .log-line .t { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+  .log-line .x { color: var(--muted); }
+  .log-line a { margin-left: auto; color: var(--accent); font-size: 11px; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="screen-label">總覽（第一性原理版：狀態靜、我方是參考、板凳是決策面、換角只在有事時出現）</div>
+<div class="window">
+  <div class="titlebar">
+    <div class="brand">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 1.5l7.5 4.3v8.4L10 18.5l-7.5-4.3V5.8z"/><path d="M10 6l3.5 2v4L10 14l-3.5-2V8z" fill="currentColor" stroke="none" opacity=".7"/></svg>
+      ARAM ASSISTANT
+    </div>
+    <div class="status">
+      <span class="pill account"><i class="dot"></i>帳號名#tag</span>
+      <span class="pill connected"><i class="dot"></i>LCU 已連線</span>
+    </div>
+    <div class="winctl">
+      <svg viewBox="0 0 12 12"><path d="M1 6h10"/></svg>
+      <svg viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11"/></svg>
+    </div>
+  </div>
+
+  <div class="body">
+    <nav class="sidebar">
+      <div class="nav on">⌂&nbsp; 總覽</div>
+      <div class="nav">🔀&nbsp; 自動化</div>
+      <div class="nav">☰&nbsp; 英雄</div>
+      <div class="nav">⚙&nbsp; 設定</div>
+      <div class="side-foot">
+        <div class="side-toggle"><span>全部自動化</span><span class="tg on" data-toggle></span></div>
+      </div>
+    </nav>
+
+    <div class="main">
+      <div class="page-head"><h1>總覽</h1><span class="phase-now"><i></i>選角中 · Mayhem</span></div>
+
+      <div>
+        <div class="progress">
+          <div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg now"></div><div class="seg"></div>
+        </div>
+        <div class="progress-labels"><span>大廳</span><span>配對中</span><span>接受對戰</span><span class="now">選角</span><span>遊戲中</span></div>
+      </div>
+
+      <!-- 只在真的要你手動決定時才出現 -->
+      <div class="alert" id="alert">
+        <div class="who">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/238.png" alt="" />
+          <span class="tx"><b>劫</b>（隊友）想用 <b>劫</b> 換你的 <b>伊澤瑞爾</b></span>
+        </div>
+        <div class="spacer"></div>
+        <span class="btn primary" data-act="accept">同意</span>
+        <span class="btn" data-act="decline">拒絕</span>
+      </div>
+
+      <!-- 我方：參考資料，一列搞定 -->
+      <div class="me">
+        <img class="avatar" src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/81.png" alt="" />
+        <div>
+          <div class="nm">伊澤瑞爾</div>
+          <div class="meta">權重 2005 · 已比 17 次</div>
+        </div>
+        <div class="spells">
+          <span class="spell"><img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/summoner_flash.png" alt="" /><span class="key">D</span></span>
+          <span class="spell"><img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/summoner_haste.png" alt="" /><span class="key">F</span></span>
+        </div>
+        <span class="tag">已鎖定</span>
+      </div>
+
+      <!-- 板凳：決策面，全文寬列滿，不捲動 -->
+      <div class="card">
+        <h3>板凳<span class="sub">依權重排序</span></h3>
+        <div class="bench-row hot">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/42.png" alt="" />
+          <span class="nm">庫奇</span><span class="will">會換入</span><span class="delta">+20</span>
+        </div>
+        <div class="bench-row">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/103.png" alt="" />
+          <span class="nm">阿璃</span><span class="delta">−8</span>
+        </div>
+        <div class="bench-row">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/238.png" alt="" />
+          <span class="nm">劫</span><span class="delta">−31</span>
+        </div>
+        <div class="bench-row">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/145.png" alt="" />
+          <span class="nm">凱莎</span><span class="delta">−44</span>
+        </div>
+        <div class="bench-row">
+          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/121.png" alt="" />
+          <span class="nm">克歐斯</span><span class="delta">−57</span>
+        </div>
+        <div class="bench-cap">庫奇高於手上 20 分（門檻 5），冷卻後自動換入</div>
+      </div>
+
+      <div class="log-line"><span class="t">09:31:12</span><span class="x">已從板凳換上庫奇</span><a href="#">查看完整紀錄 →</a></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll("[data-toggle]").forEach((t) => {
+    t.addEventListener("click", () => t.classList.toggle("on"));
+  });
+  document.querySelectorAll("[data-act]").forEach((b) => {
+    b.addEventListener("click", () => {
+      b.textContent = b.dataset.act === "accept" ? "已同意 ✓" : "已拒絕";
+      b.classList.add("done");
+      const other = b.parentElement.querySelector(".btn:not(.primary)");
+      if (other) other.classList.add("done");
+    });
+  });
+</script>
+</body>
+</html>

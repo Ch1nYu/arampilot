@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>ARAM ASSISTANT</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/src/styles.css">
 </head>
 <body data-theme="min">
@@ -18,7 +18,6 @@
     <div class="status">
       <span class="pill account" id="accountPill" hidden></span>
       <span class="pill" id="lcuPill"><i class="dot"></i>等待客戶端...</span>
-      <span class="pill" id="phasePill">大廳 · Mayhem</span>
     </div>
     <div class="winctl">
       <button id="btnMinimize" title="縮小至系統匣"><svg viewBox="0 0 12 12" stroke="currentColor"><path d="M1 6h10"/></svg></button>
@@ -28,25 +27,13 @@
 
   <div class="main">
     <nav class="sidebar">
-      <div class="nav on" data-go="overview"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 9.5L10 3.5l7 6V17H3z"/></svg>總覽<span class="num">00</span></div>
-      <div class="side-group">自動化</div>
-      <div class="nav" data-go="match"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 16L15 5M11 4h5v5M4 4l4.5 4.5M11.5 11.5L16 16M13 16h3v-3"/></svg>對戰與選角<span class="num">01</span></div>
-      <div class="nav" data-go="trade"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h12l-3-3M17 13H5l3 3"/></svg>換角規則<span class="num">02</span></div>
-      <div class="nav" data-go="chat"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h14v9H8l-4 3v-3H3z"/></svg>聊天訊息<span class="num">03</span></div>
-      <div class="nav" data-go="ff"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 17V3M5 4h10l-2 3 2 3H5"/></svg>投降提醒<span class="num">04</span></div>
-      <div class="side-group">英雄</div>
-      <div class="nav" data-go="priority"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h12M4 10h8M4 15h4"/></svg>英雄優先序<span class="num">05</span></div>
-      <div class="nav" data-go="battle"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5l3 10 3-10M17 6c-.5-1-1.5-1.3-2.5-1.3-1.3 0-2.3.8-2.3 2 0 2.8 5 1.8 5 4.8 0 1.3-1.1 2.2-2.6 2.2-1.1 0-2.1-.5-2.6-1.4"/></svg>二選一大比拚<span class="num">06</span></div>
-      <div class="side-group">系統</div>
-      <div class="nav" data-go="log"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 3h10v14H5zM8 7h4M8 10h4M8 13h2"/></svg>執行紀錄<span class="num">07</span></div>
-      <div class="nav" data-go="general"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="2.8"/><path d="M10 2v2.5M10 15.5V18M2 10h2.5M15.5 10H18M4.3 4.3l1.8 1.8M13.9 13.9l1.8 1.8M4.3 15.7l1.8-1.8M13.9 6.1l1.8-1.8"/></svg>一般設定<span class="num">08</span></div>
+      <div class="nav on" data-go="overview"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 9.5L10 3.5l7 6V17H3z"/></svg>總覽</div>
+      <div class="nav" data-go="auto"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 16L15 5M11 4h5v5M4 4l4.5 4.5M11.5 11.5L16 16M13 16h3v-3"/></svg>自動化</div>
+      <div class="nav" data-go="hero"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h12M4 10h8M4 15h4"/></svg>英雄</div>
+      <div class="nav" data-go="log"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 3h10v14H5zM8 7h4M8 10h4M8 13h2"/></svg>紀錄</div>
+      <div class="nav" data-go="settings"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="2.8"/><path d="M10 2v2.5M10 15.5V18M2 10h2.5M15.5 10H18M4.3 4.3l1.8 1.8M13.9 13.9l1.8 1.8M4.3 15.7l1.8-1.8M13.9 6.1l1.8-1.8"/></svg>設定</div>
       <div class="side-foot">
         <div class="master"><span>全部自動化</span><label class="sw"><input type="checkbox" id="master" checked><i></i></label></div>
-        <div style="display:flex;gap:4px">
-          <button class="btn" id="btnDevStartTest" style="flex:1;padding:3px 6px;font-size:11px" title="建立/啟動 1 人自訂大亂鬥選角測試">▶ 測選角</button>
-          <button class="btn" id="btnDevQuitTest" style="flex:1;padding:3px 6px;font-size:11px" title="立即退出自訂房選角（不進遊戲）">⏹ 退房</button>
-        </div>
-        <div class="ver">v0.1.0 · Tauri v2</div>
       </div>
     </nav>
 
@@ -55,92 +42,129 @@
       <!-- 總覽 -->
       <section class="page on" id="p-overview">
         <div class="page-head">
-          <div><h1>總覽</h1><div class="sub" id="overviewModeSub">一般 ARAM 與海克斯 Mayhem 共用同一套英雄優先序與自動化設定。</div></div>
+          <h1>總覽</h1>
+          <span class="phase-now" id="overviewPhase"><i></i><em>等待連線</em></span>
         </div>
-        <div class="card">
-          <div class="card-title">目前對戰狀態<span class="right pill" id="matchStatusBadge"><i class="dot"></i>等待客戶端</span></div>
-          <div class="phase">
-            <div class="step" id="st-Lobby">大廳</div><div class="step" id="st-Matchmaking">配對中</div><div class="step" id="st-ReadyCheck">接受對戰</div>
-            <div class="step" id="st-ChampSelect">選角</div><div class="step" id="st-InProgress">遊戲中</div>
+        <div>
+          <div class="psteps">
+            <div class="pstep" id="st-Lobby"></div>
+            <div class="pstep" id="st-Matchmaking"></div>
+            <div class="pstep" id="st-ReadyCheck"></div>
+            <div class="pstep" id="st-ChampSelect"></div>
+            <div class="pstep" id="st-InProgress"></div>
           </div>
-          <div class="ov-cols">
-            <div class="ov-col" id="miniMyChamp"></div>
-            <div class="ov-col" id="miniBench"></div>
-            <div class="ov-col" id="miniTrade"></div>
-          </div>
+          <div class="plabels"><span>大廳</span><span>配對中</span><span>接受對戰</span><span>選角</span><span>遊戲中</span></div>
         </div>
-        <div class="card">
-          <div class="card-title">最近執行紀錄<span class="right"><a class="go" data-go="log">查看完整紀錄 →</a></span></div>
-          <div class="log" id="logShort" style="margin-top:6px"></div>
+        <div class="alert" id="tradeAlert" style="display:none"></div>
+        <div class="cols">
+          <div class="card hero-card" id="miniMyChamp"></div>
+          <div class="card bench-card" id="miniBench"></div>
         </div>
+        <div class="log-line"><span class="t" id="logShortTime"></span><span class="x" id="logShortText"></span><span class="r" id="logShortReason"></span><a class="go" data-go="log">查看完整紀錄 →</a></div>
       </section>
 
-      <!-- 對戰與選角 -->
-      <section class="page" id="p-match">
-        <div class="page-head"><div><h1>對戰與選角</h1><div class="sub">配對成功到選角結束之間的個人自動化。</div></div></div>
+      <!-- 自動化 -->
+      <section class="page" id="p-auto">
+        <div class="page-head"><h1>自動化</h1></div>
+
         <div class="card">
-          <div class="card-title">自動接受對戰<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-accept" id="cfgAutoAccept"><i></i></label></span></div>
-          <div class="card-desc">配對成功時自動發送接受。</div>
-          <div class="rows" id="g-accept">
-            <div class="row"><div class="label"><b>延遲秒數</b><span>模擬人工操作，避免瞬間反應</span></div>
-              <div class="range"><input type="range" min="0" max="8" step="0.5" value="2" data-suffix=" 秒" id="cfgAcceptDelay"><span class="val"></span></div></div>
-            <div class="row"><div class="label"><b>生效模式</b><span>其他模式出現配對時不自動接受</span></div>
-              <div class="chk" data-chk id="acceptModes"><button class="on" data-v="ARAM">ARAM</button><button class="on" data-v="Mayhem">Mayhem</button><button data-v="其他">其他</button></div></div>
-            <div class="row"><div class="label"><b>接受時提醒</b></div>
-              <div class="seg" data-seg id="cfgAcceptNotify"><button data-v="mute">靜音</button><button class="on" data-v="sound">提示音</button><button data-v="notification">系統通知</button></div></div>
+          <div class="set-row" style="padding-top:2px">
+            <span class="set-lab">接受時提醒</span>
+            <span class="seg" data-seg id="cfgAcceptNotify"><button data-v="mute">靜音</button><button class="on" data-v="sound">提示音</button><button data-v="notification">系統通知</button></span>
           </div>
         </div>
+
         <div class="card">
-          <div class="card-title">開局自動選卡（前 15 秒）<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-card" id="cfgAutoCard"><i></i></label></span></div>
-          <div class="card-desc">從 2 到 3 張隨機英雄卡中挑選偏好最高的一張。若卡池皆非想玩角色則不動作。</div>
+          <div class="card-head"><h3>開局自動選卡</h3><label class="sw"><input type="checkbox" checked data-gate="g-card" id="cfgAutoCard"><i></i></label></div>
           <div class="rows" id="g-card">
-            <div class="row"><div class="label"><b>選卡策略</b><span>依優先序分級高低決定</span></div>
-              <div class="seg" data-seg id="cardStrategy"><button class="on" data-v="highest_score">偏好最高分</button><button data-v="only_top_tiers">只選 本命/愛角</button></div></div>
-            <div class="row"><div class="label"><b>等待秒數</b><span>在設定秒數前若你手動點選，則不覆蓋你的選擇</span></div>
-              <div class="range"><input type="range" min="0" max="12" value="3" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></div></div>
+            <div class="set-row">
+              <span class="set-lab">選卡策略</span>
+              <span class="seg" data-seg id="cardStrategy"><button class="on" data-v="highest_score">偏好最高分</button><button data-v="only_top_tiers">只選本命／愛角</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">等待秒數</span>
+              <span class="sliderbox"><input type="range" min="0" max="12" value="3" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></span>
+            </div>
           </div>
+          <div class="hint">手動點選後不會被覆蓋</div>
         </div>
-        <div class="card">
-          <div class="card-title">自動搶板凳<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-bench" id="cfgAutoBench"><i></i></label></span></div>
-          <div class="card-desc">板凳解鎖後比對偏好分數，3 秒冷卻結束即發送交換。</div>
-          <div class="rows" id="g-bench">
-            <div class="row"><div class="label"><b>分差門檻</b><span>板凳英雄須高於手上英雄達此分差才搶（支援滑桿或直接輸入數字）</span></div>
-              <div class="range"><input type="range" min="0" max="40" value="10" data-prefix="≥ " data-suffix=" 分" id="cfgBenchDiff"><input type="number" class="input num-in" min="0" max="40" value="10" id="cfgBenchDiffNum"><span class="val"></span></div></div>
-            <div class="row"><div class="label"><b>手上是 🔒 不換出 時停止搶</b><span>已拿到本命英雄即鎖定不再變動</span></div><label class="sw"><input type="checkbox" checked id="cfgLockStopBench"><i></i></label></div>
-            <div class="row"><div class="label"><b>倒數最後幾秒停止搶角</b><span>保留時間微調符文與召喚師技能</span></div>
-              <div class="range"><input type="range" min="0" max="15" value="5" data-suffix=" 秒" id="cfgStopBenchTime"><span class="val"></span></div></div>
-          </div>
-        </div>
-        <div class="note">召喚師技能（D／F 主副鍵位切換、預設鬼步／雪球）已收整於 <a class="go" data-go="general">⚙ 一般設定</a>；選角時也可在總覽「我的英雄」直接點小圖示切換。</div>
-      </section>
 
-      <!-- 換角規則 -->
-      <section class="page" id="p-trade">
-        <div class="page-head"><div><h1>換角規則</h1><div class="sub">隊友發起交換請求時的自動化判斷邏輯。</div></div></div>
         <div class="card">
-          <div class="card-title">判斷順序（不干涉 Blitz，純粹個人偏好自動化）</div>
-          <div class="flow">
-            <div class="box"><b>① 個別英雄標記</b><span>🔒 不換出 → 拒絕<br>🎁 隨時可換 → 接受<br>⛔ 不搶 → 拒絕</span></div>
-            <div class="arr">→</div>
-            <div class="box"><b>② 規則衝突保護</b><span>手上有【本命】但對方給更高分：<br><b>不自動換，留給玩家手動挑</b></span></div>
-            <div class="arr">→</div>
-            <div class="box"><b>③ 偏好分數門檻</b><span>換來的大於手上手感差門檻 → 接受<br>其餘皆不動作寫入 Log</span></div>
+          <div class="card-head"><h3>自動搶板凳</h3><label class="sw"><input type="checkbox" checked data-gate="g-bench" id="cfgAutoBench"><i></i></label></div>
+          <div class="rows" id="g-bench">
+            <div class="set-row">
+              <span class="set-lab">分差門檻</span>
+              <span class="sliderbox"><input type="range" min="0" max="40" value="10" data-prefix="≥ " data-suffix=" 分" id="cfgBenchDiff"><span class="val"></span></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">有 🔒 的英雄不換出</span>
+              <label class="sw"><input type="checkbox" checked id="cfgLockStopBench"><i></i></label>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">停止搶角的倒數秒數</span>
+              <span class="sliderbox"><input type="range" min="0" max="15" value="5" data-suffix=" 秒" id="cfgStopBenchTime"><span class="val"></span></span>
+            </div>
           </div>
+          <div class="hint">板凳解鎖後比對分數，3 秒冷卻</div>
         </div>
+
         <div class="card">
-          <div class="card-title">自動處理隊友請求<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-trade" id="cfgAutoTrade"><i></i></label></span></div>
+          <div class="card-head"><h3>隊友換角</h3><label class="sw"><input type="checkbox" checked data-gate="g-trade" id="cfgAutoTrade"><i></i></label></div>
           <div class="rows" id="g-trade">
-            <div class="row"><div class="label"><b>組排隊友／好友發起換角時</b><span>自動識別同房間組排成員與好友名單，與路人分開處理</span></div>
-              <div class="seg" data-seg id="friendTradePolicy"><button class="on" data-v="manual">交給我手動決定</button><button data-v="auto_accept">直接自動讓給他</button><button data-v="same_as_stranger">與路人相同規則</button></div></div>
-            <div class="row"><div class="label"><b>自動接受：換來的喜好分高出</b><span>對方偏好分 − 我的偏好分 ≥ 這個值（手上未分類以 40 分計）</span></div>
-              <div class="range"><input type="range" min="0" max="40" value="10" id="thAccept" data-prefix="≥ " data-suffix=" 分"><input type="number" class="input num-in" min="0" max="40" value="10" id="thAcceptNum"><span class="val"></span></div></div>
-            <div class="row"><div class="label"><b>自動拒絕：我手上的英雄是</b><span>手上已經是本命或想玩的英雄時不換</span></div>
-              <div class="seg" data-seg id="rejTier"><button class="on" data-v="本命">本命</button><button data-v="本命愛角">本命或愛角</button><button data-v="">關閉</button></div></div>
-            <div class="row"><div class="label"><b>條件外或規則衝突時</b><span>不自動動作，寫入紀錄由你手動點選</span></div><span class="val" style="color:var(--muted)">手動決定</span></div>
+            <div class="set-row">
+              <span class="set-lab">接受分差</span>
+              <span class="sliderbox"><input type="range" min="0" max="40" value="10" data-prefix="≥ " data-suffix=" 分" id="thAccept"><span class="val"></span></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">絕不換出的階層</span>
+              <span class="seg" data-seg id="rejTier"><button class="on" data-v="本命">本命</button><button data-v="本命愛角">本命或愛角</button><button data-v="">關閉</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">好友換角策略</span>
+              <span class="seg" data-seg id="friendTradePolicy"><button class="on" data-v="manual">手動決定</button><button data-v="auto_accept">自動同意</button><button data-v="same_as_stranger">同路人規則</button></span>
+            </div>
+          </div>
+          <div class="hint">好友／組排發起換角時，預設由你決定</div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>換角發話</h3><label class="sw"><input type="checkbox" checked data-gate="g-chat" id="cfgAutoChat"><i></i></label></div>
+          <div class="rows" id="g-chat">
+            <div class="set-row">
+              <span class="set-lab">發送時機</span>
+              <span class="seg" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">發送延遲</span>
+              <span class="sliderbox"><input type="range" min="0" max="5" step="0.5" value="1" data-suffix=" 秒" id="cfgChatDelay"><span class="val"></span></span>
+            </div>
+            <div class="row"><div class="label"><b>自訂語句</b><span>多筆時隨機送一則；支援 {old} {new}</span></div><div class="msgs" id="msgs"></div></div>
+            <div class="addrow"><input class="input" id="msgIn" placeholder="輸入訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入</button></div>
+            <div class="note" id="msgPreview" style="margin-top:8px"></div>
           </div>
         </div>
+
         <div class="card">
-          <div class="card-title">規則試算<span class="right card-desc" style="margin:0">調整上方參數，即時預覽決策結果</span></div>
+          <div class="card-head"><h3>投降提醒</h3><label class="sw"><input type="checkbox" checked data-gate="g-ff" id="cfgAutoFf"><i></i></label></div>
+          <div class="rows" id="g-ff">
+            <div class="set-row">
+              <span class="set-lab">提醒時間點</span>
+              <input class="input" value="08:00" style="width:84px;text-align:center" id="cfgFfTime">
+            </div>
+            <div class="set-row">
+              <span class="set-lab">提醒方式</span>
+              <span class="seg" data-chk id="cfgFfMethods"><button data-v="clipboard">複製 /ff</button><button class="on" data-v="sound">提示音</button><button class="on" data-v="notification">桌面通知</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">投票未過冷卻提醒</span>
+              <label class="sw"><input type="checkbox" id="cfgFfCooldownReminder"><i></i></label>
+            </div>
+          </div>
+          <div class="hint">到時間提醒你；遊戲內 /ff 仍需你自己打字（Riot 擋外部貼上）</div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>規則試算</h3><span class="hint" style="margin:0">調整條件，即時預覽決策</span></div>
           <div class="sim sim3">
             <div><label>我手上的英雄</label><select class="input" id="simMine"></select></div>
             <div><label>隊友要跟我換的英雄</label><select class="input" id="simOffer"></select></div>
@@ -150,178 +174,177 @@
         </div>
       </section>
 
-      <!-- 聊天訊息 -->
-      <section class="page" id="p-chat">
-        <div class="page-head"><div><h1>聊天訊息</h1><div class="sub">與隊友換角成功後，自動在選角聊天室發送感謝文字。</div></div></div>
-        <div class="card">
-          <div class="card-title">換角成功後自動發話<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-chat" id="cfgAutoChat"><i></i></label></span></div>
-          <div class="rows" id="g-chat">
-            <div class="row"><div class="label"><b>觸發時機</b><span>僅限真正的隊友交換，骰骰子或板凳交換不觸發</span></div>
-              <div class="chk" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></div></div>
-            <div class="row"><div class="label"><b>發送延遲</b><span>交換確認後稍候發送</span></div>
-              <div class="range"><input type="range" min="0" max="5" step="0.5" value="1" data-suffix=" 秒" id="cfgChatDelay"><span class="val"></span></div></div>
-          </div>
+      <!-- 英雄 -->
+      <section class="page" id="p-hero">
+        <div class="page-head"><h1>英雄</h1></div>
+        <div class="tabs" id="heroTabs">
+          <span class="on" data-hero-tab="priority">優先序</span>
+          <span data-hero-tab="battle">二選一大比拚</span>
         </div>
-        <div class="card">
-          <div class="card-title">自訂語句清單<span class="right card-desc" style="margin:0">多筆時隨機發送其中一則</span></div>
-          <div class="card-desc">支援變數：<span class="var">{old}</span> 換出的英雄、<span class="var">{new}</span> 換到的英雄</div>
-          <div class="msgs" id="msgs"></div>
-          <div class="addrow"><input class="input" id="msgIn" placeholder="輸入自訂訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入清單</button></div>
-          <div class="note" style="margin-top:12px" id="msgPreview"></div>
-        </div>
-      </section>
 
-      <!-- 投降提醒 -->
-      <section class="page" id="p-ff">
-        <div class="page-head"><div><h1>投降提醒</h1><div class="sub">到達最早可投降時間時發出音效或桌面提醒。</div></div></div>
-        <div class="card">
-          <div class="card-title">安全投降提醒（純唯讀 API，絕不模擬鍵盤）<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-ff" id="cfgAutoFf"><i></i></label></span></div>
-          <div class="rows" id="g-ff">
-            <div class="row"><div class="label"><b>提醒時間點</b><span>官方現行規則為 08:00</span></div><input class="input" value="08:00" style="width:80px;text-align:center" id="cfgFfTime"></div>
-            <div class="row"><div class="label"><b>提醒方式</b></div>
-              <div class="chk" data-chk id="cfgFfMethods"><button data-v="clipboard">寫入剪貼簿 /ff</button><button class="on" data-v="sound">清脆提示音</button><button class="on" data-v="notification">桌面通知</button></div></div>
-            <div class="row"><div class="label"><b>投票未過冷卻提醒</b><span>投降表決失敗後，3 分鐘隊伍冷卻結束再提醒一次</span></div><label class="sw"><input type="checkbox" id="cfgFfCooldownReminder"><i></i></label></div>
+        <div id="tab-priority">
+          <div class="toolbar">
+            <input class="input" id="search" placeholder="搜尋英雄中文名稱…" style="width:170px">
+            <button class="btn primary" id="btnImportMastery" title="讀取目前登入的 LoL 帳號專精分數，自動分配初始階層與順位">⚡ 帳號專精自動初排</button>
+            <button class="btn" id="btnGotoBattle">快速分類 / 二選一</button>
+            <button class="btn" id="btnSortUnranked">未分類排序</button>
+            <button class="btn" id="btnResetTiers" title="將目前模式的所有英雄重置回未分類">重置</button>
+            <div class="legend"><span>🔒 不換出</span><span>🎁 隨時可換</span><span>⛔ 不搶</span></div>
           </div>
+          <div id="tiers"></div>
         </div>
-        <div class="note">遊戲中 100% 透過 <b>https://127.0.0.1:2999/liveclientdata</b> 唯讀讀取時間，不發送任何鍵盤事件。</div>
-      </section>
 
-      <!-- 英雄優先序 -->
-      <section class="page" id="p-priority">
-        <div class="page-head"><div><h1>英雄優先序</h1><div class="sub">拖曳英雄卡片自由調整喜好分級與順位，越靠左分數越高。點擊英雄圖示右側標記可切換 🔒/🎁/⛔。</div></div></div>
-        <div class="toolbar">
-          <input class="input" id="search" placeholder="搜尋英雄中文名稱…" style="width:155px">
-          <button class="btn primary" id="btnImportMastery" title="讀取目前登入的 LoL 帳號專精分數，自動分配初始階層與順位">⚡ 帳號專精自動初排</button>
-          <button class="btn" data-go="battle">快速分類 / 二選一</button>
-          <button class="btn" id="btnSortUnranked">未分類排序</button>
-          <button class="btn" id="btnResetTiers" title="將目前模式的所有英雄重置回未分類">重置</button>
-          <div class="legend"><span>🔒 不換出</span><span>🎁 隨時可換</span><span>⛔ 不搶</span></div>
-        </div>
-        <div id="tiers"></div>
-      </section>
-
-      <!-- 二選一大比拚 -->
-      <section class="page" id="p-battle">
-        <div class="page-head">
-          <div>
-            <h1>快速分類與二選一精排</h1>
-            <div class="sub">第一階段用「閃卡五分類」快速把 173 隻未分類英雄歸位；第二階段在「同階層內二選一」排定精確先後順序。</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
+        <div id="tab-battle" style="display:none">
+          <div class="bt-top" style="margin-bottom:12px">
             <div class="seg" id="btStageSeg">
               <button class="on" data-stage="flash">① 閃卡五分類</button>
               <button data-stage="pk">② 階層內二選一</button>
             </div>
           </div>
-        </div>
 
-        <!-- 第一階段：閃卡五分類 -->
-        <div id="btFlashWrap">
-          <div class="card">
-            <div class="bt-top" style="margin-bottom:12px">
-              <div class="seg" id="flashScopeSeg">
-                <button class="on" data-scope="unranked">只抽「未分類」英雄</button>
-                <button data-scope="all">重新檢視全部英雄</button>
-              </div>
-              <span class="card-desc" style="margin:0" id="flashProgressText">準備中...</span>
-              <div class="progress"><i id="flashProgressBar"></i></div>
-              <button class="btn" id="btnFlashImportMastery" title="直接從 LoL 客戶端讀取你的帳號英雄專精自動初排">⚡ 帳號專精自動初排</button>
-            </div>
-
-            <div class="flash-stage">
-              <div class="flash-card" id="flashCard" draggable="true"></div>
-              <div class="flash-buckets" id="flashBuckets">
-                <button class="flash-bucket" data-tier="本命"><span class="k">鍵盤 1</span><b>本命</b><small>90–100 分</small></button>
-                <button class="flash-bucket" data-tier="愛角"><span class="k">鍵盤 2</span><b>愛角</b><small>75–89 分</small></button>
-                <button class="flash-bucket" data-tier="順手"><span class="k">鍵盤 3</span><b>順手</b><small>60–74 分</small></button>
-                <button class="flash-bucket" data-tier="勉強"><span class="k">鍵盤 4</span><b>勉強</b><small>40–59 分</small></button>
-                <button class="flash-bucket" data-tier="封印"><span class="k">鍵盤 5</span><b>封印</b><small>10–39 分 (不搶)</small></button>
-              </div>
-            </div>
-
-            <div class="bt-actions" style="margin-top:12px">
-              <button class="btn" id="flashUndo">復原上一隻 <span class="var">Backspace</span></button>
-              <button class="btn" id="flashSkip">跳過這隻 <span class="var">Space</span></button>
-              <button class="btn primary" id="flashGoPk">前往 ② 階層內二選一精排 →</button>
-            </div>
-          </div>
-          <div class="note">提示：可直接按鍵盤數字鍵 <b>1 ～ 5</b>、<b>點擊下方五個分類按鈕</b>，或將<b>上方英雄卡直接拖曳到分類框</b>。每一隻分類完會立即自動儲存。</div>
-        </div>
-
-        <!-- 第二階段：階層內二選一 PK -->
-        <div id="btPkWrap" style="display:none">
-          <div class="toolbar" style="margin-bottom:10px">
-            <span class="card-desc" style="margin:0">選擇要精排順位的範圍：</span>
-            <div class="seg" id="pkTierSeg">
-              <button class="on" data-tier="本命">本命</button>
-              <button data-tier="愛角">愛角</button>
-              <button data-tier="順手">順手</button>
-              <button data-tier="勉強">勉強</button>
-              <button data-tier="top2">本命 + 愛角</button>
-              <button data-tier="all">全部可用 (含未分類)</button>
-            </div>
-          </div>
-          <div class="bt-wrap">
+          <div id="btFlashWrap">
             <div class="card">
-              <div class="bt-top"><span class="card-desc" style="margin:0" id="btRound">第 1 回合</span><div class="progress"><i id="btBar"></i></div></div>
-              <div class="vs">
-                <div class="fighter" id="fL"></div>
-                <div class="vs-mid">VS</div>
-                <div class="fighter" id="fR"></div>
+              <div class="bt-top" style="margin-bottom:12px">
+                <div class="seg" id="flashScopeSeg">
+                  <button class="on" data-scope="unranked">只抽「未分類」英雄</button>
+                  <button data-scope="all">重新檢視全部英雄</button>
+                </div>
+                <span class="card-desc" style="margin:0" id="flashProgressText">準備中...</span>
+                <div class="progress"><i id="flashProgressBar"></i></div>
+                <button class="btn" id="btnFlashImportMastery" title="直接從 LoL 客戶端讀取你的帳號英雄專精自動初排">⚡ 帳號專精自動初排</button>
               </div>
-              <div class="bt-actions">
-                <button class="btn" id="btUndo" title="復原上一次對決選擇">復原 <span class="var">Backspace</span></button>
-                <button class="btn" id="btTie">都很愛 <span class="var">↑</span></button>
-                <button class="btn" id="btSkip">跳過 <span class="var">Space</span></button>
-                <button class="btn" id="btDown">都不想玩 <span class="var">↓</span></button>
-                <button class="btn primary" id="btApply">查看優先序結果 →</button>
+
+              <div class="flash-stage">
+                <div class="flash-card" id="flashCard" draggable="true"></div>
+                <div class="flash-buckets" id="flashBuckets">
+                  <button class="flash-bucket" data-tier="本命"><span class="k">鍵盤 1</span><b>本命</b><small>90–100 分</small></button>
+                  <button class="flash-bucket" data-tier="愛角"><span class="k">鍵盤 2</span><b>愛角</b><small>75–89 分</small></button>
+                  <button class="flash-bucket" data-tier="順手"><span class="k">鍵盤 3</span><b>順手</b><small>60–74 分</small></button>
+                  <button class="flash-bucket" data-tier="勉強"><span class="k">鍵盤 4</span><b>勉強</b><small>40–59 分</small></button>
+                  <button class="flash-bucket" data-tier="封印"><span class="k">鍵盤 5</span><b>封印</b><small>10–39 分 (不搶)</small></button>
+                </div>
+              </div>
+
+              <div class="bt-actions" style="margin-top:12px">
+                <button class="btn" id="flashUndo">復原上一隻 <span class="var">Backspace</span></button>
+                <button class="btn" id="flashSkip">跳過這隻 <span class="var">Space</span></button>
+                <button class="btn primary" id="flashGoPk">前往 ② 階層內二選一精排 →</button>
               </div>
             </div>
-            <div class="card">
-              <div class="card-title">目前範圍即時排名</div>
-              <ol class="rank" id="rank" style="margin-top:8px"></ol>
-            </div>
+            <div class="note">提示：可直接按鍵盤數字鍵 <b>1 ～ 5</b>、<b>點擊下方五個分類按鈕</b>，或將<b>上方英雄卡直接拖曳到分類框</b>。每一隻分類完會立即自動儲存。</div>
           </div>
-          <div class="note">系統會<b>優先抽出場次數最少</b>的英雄配對，確保範圍內的每一隻英雄都均勻出場、不再無限重複固定角色。按「套用順位至優先序」即可將比較後的先後順序寫入該階層。</div>
+
+          <div id="btPkWrap" style="display:none">
+            <div class="toolbar" style="margin-bottom:10px">
+              <span class="card-desc" style="margin:0">選擇要精排順位的範圍：</span>
+              <div class="seg" id="pkTierSeg">
+                <button class="on" data-tier="本命">本命</button>
+                <button data-tier="愛角">愛角</button>
+                <button data-tier="順手">順手</button>
+                <button data-tier="勉強">勉強</button>
+                <button data-tier="top2">本命 + 愛角</button>
+                <button data-tier="all">全部可用 (含未分類)</button>
+              </div>
+            </div>
+            <div class="bt-wrap">
+              <div class="card">
+                <div class="bt-top"><span class="card-desc" style="margin:0" id="btRound">第 1 回合</span><div class="progress"><i id="btBar"></i></div></div>
+                <div class="vs">
+                  <div class="fighter" id="fL"></div>
+                  <div class="vs-mid">VS</div>
+                  <div class="fighter" id="fR"></div>
+                </div>
+                <div class="bt-actions">
+                  <button class="btn" id="btUndo" title="復原上一次對決選擇">復原 <span class="var">Backspace</span></button>
+                  <button class="btn" id="btTie">都很愛 <span class="var">↑</span></button>
+                  <button class="btn" id="btSkip">跳過 <span class="var">Space</span></button>
+                  <button class="btn" id="btDown">都不想玩 <span class="var">↓</span></button>
+                  <button class="btn primary" id="btApply">查看優先序結果 →</button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-title">目前範圍即時排名</div>
+                <ol class="rank" id="rank" style="margin-top:8px"></ol>
+              </div>
+            </div>
+            <div class="note">系統會<b>優先抽出場次數最少</b>的英雄配對，確保範圍內的每一隻英雄都均勻出場、不再無限重複固定角色。按「套用順位至優先序」即可將比較後的先後順序寫入該階層。</div>
+          </div>
         </div>
       </section>
 
-      <!-- 執行紀錄 -->
+      <!-- 紀錄 -->
       <section class="page" id="p-log">
-        <div class="page-head"><div><h1>執行紀錄</h1><div class="sub">即時記錄所有自動化動作與「條件外不處理」的詳細原因。</div></div>
+        <div class="page-head"><div><h1>執行紀錄</h1></div>
           <div class="seg" data-seg id="logFilter"><button class="on" data-v="all">全部</button><button data-v="act">已執行</button><button data-v="skip">略過</button><button data-v="err">錯誤</button></div></div>
         <div class="card"><div class="log" id="logFull"></div></div>
       </section>
 
-      <!-- 一般設定 -->
-      <section class="page" id="p-general">
-        <div class="page-head"><div><h1>一般設定</h1><div class="sub">設定召喚師技能主／副鍵位習慣、預設副技能與視窗常駐行為。</div></div></div>
+      <!-- 設定 -->
+      <section class="page" id="p-settings">
+        <div class="page-head"><h1>設定</h1></div>
+
         <div class="card">
-          <div class="card-title">自動帶召喚師技能（D / F 主副切換）<span class="right"><label class="sw"><input type="checkbox" checked data-gate="g-spells" id="cfgAutoSpells"><i></i></label></span></div>
-          <div class="card-desc">僅於咆哮深淵 ARAM／海克斯 Mayhem 選角生效。閃現固定在主鍵位，切換技能時只會變動副技能格。</div>
+          <div class="card-head"><h3>召喚師技能</h3><label class="sw"><input type="checkbox" checked data-gate="g-spells" id="cfgAutoSpells"><i></i></label></div>
           <div class="rows" id="g-spells">
-            <div class="row"><div class="label"><b>主／副鍵位切換</b><span>依個人習慣固定閃現位置（預設 D 閃現 ／ F 副技能）</span></div>
-              <div class="seg" data-seg id="cfgPrimarySpellKey"><button class="on" data-v="D">D 閃現（主）／ F 副技能</button><button data-v="F">F 閃現（主）／ D 副技能</button></div></div>
-            <div class="row"><div class="label"><b>預設副技能</b><span>鬼步與雪球常駐顯示，點「⋯ 其他」可選清晰、虛弱、點燃、光盾、治癒、淨化</span></div>
-              <div class="spell-picker" id="cfgDefaultSpellPicker"></div></div>
-            <div class="row"><div class="label"><b>英雄專屬副技能記憶</b><span id="spellOverrideCountText">目前已記憶 0 位英雄的專屬副技能（選角時在總覽點選即自動記憶）</span></div>
-              <button class="btn" id="btnResetSpellOverrides">清除本模式個別記憶</button></div>
+            <div class="set-row">
+              <span class="set-lab">主技能鍵位（閃現固定）</span>
+              <span class="seg" data-seg id="cfgPrimarySpellKey"><button class="on" data-v="D">D 閃現／F 副技能</button><button data-v="F">F 閃現／D 副技能</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">預設副技能</span>
+              <div class="spell-picker" id="cfgDefaultSpellPicker"></div>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">英雄專屬副技能記憶</span>
+              <div style="display:flex;align-items:center;gap:10px"><span class="set-val" id="spellOverrideCountText">已記憶 0 位</span><button class="btn" id="btnResetSpellOverrides">清除個別記憶</button></div>
+            </div>
           </div>
+          <div class="hint">鬼步與雪球常駐，點「⋯ 其他」可選清晰、虛弱、點燃、光盾、治癒、淨化；選角時在總覽點技能晶片即記憶</div>
         </div>
-        <div class="card"><div class="rows" style="margin-top:0">
-          <div class="row"><div class="label"><b>介面強調色</b><span>自訂偏好主題色，預設為緋紅</span></div>
-            <div class="chk" id="accentPicker">
+
+        <div class="card">
+          <div class="card-head"><h3>外觀</h3></div>
+          <div class="set-row" style="padding-top:2px">
+            <span class="set-lab">介面強調色</span>
+            <span class="seg" id="accentPicker">
               <button class="on" data-accent="crimson" style="color:#EF4444">緋紅</button>
               <button data-accent="amber" style="color:#E5A93C">暖琥珀</button>
               <button data-accent="emerald" style="color:#34D399">翡翠綠</button>
               <button data-accent="violet" style="color:#C084FC">暮光紫</button>
+            </span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>行為</h3></div>
+          <div class="set-row">
+            <span class="set-lab">關閉視窗時縮到系統匣</span>
+            <label class="sw"><input type="checkbox" checked id="cfgCloseToTray"><i></i></label>
+          </div>
+          <div class="set-row">
+            <span class="set-lab">開機自動啟動</span>
+            <label class="sw"><input type="checkbox" id="cfgAutoStart"><i></i></label>
+          </div>
+          <div class="set-row">
+            <span class="set-lab">LoL 客戶端關閉時的行為</span>
+            <span class="seg" data-seg id="cfgClientCloseAction"><button class="on" data-v="wait">持續等待重新連線</button><button data-v="exit">隨客戶端一同關閉</button></span>
+          </div>
+          <div class="set-row">
+            <span class="set-lab">匯出 / 匯入偏好設定檔</span>
+            <div style="display:flex;gap:6px"><button class="btn" id="btnExportJson">匯出 JSON</button><button class="btn" id="btnImportJson">匯入 JSON</button><input type="file" id="importFile" accept="application/json,.json" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>開發</h3></div>
+          <div class="set-row" style="padding-top:2px">
+            <span class="set-lab">測試用操作</span>
+            <div style="display:flex;gap:6px">
+              <button class="btn" id="btnDevStartTest" title="建立/啟動 1 人自訂大亂鬥選角測試">▶ 測選角</button>
+              <button class="btn" id="btnDevQuitTest" title="立即退出自訂房選角（不進遊戲）">⏹ 退房</button>
             </div>
           </div>
-          <div class="row"><div class="label"><b>開機時自動啟動</b><span>登入 Windows 時於系統匣背景啟動（可選）</span></div><label class="sw"><input type="checkbox" id="cfgAutoStart"><i></i></label></div>
-          <div class="row"><div class="label"><b>點擊關閉按鈕時縮小至系統匣</b><span>關閉視窗時退回右下角 Tray，不中斷背景自動化</span></div><label class="sw"><input type="checkbox" checked id="cfgCloseToTray"><i></i></label></div>
-          <div class="row"><div class="label"><b>LoL 客戶端關閉時的行為</b></div><div class="seg" data-seg id="cfgClientCloseAction"><button class="on" data-v="wait">持續等待重新連線</button><button data-v="exit">隨客戶端一同關閉</button></div></div>
-          <div class="row"><div class="label"><b>匯出 / 匯入偏好設定檔</b><span>包含優先序清單與各模式開關參數</span></div><div style="display:flex;gap:6px"><button class="btn" id="btnExportJson">匯出 JSON</button><button class="btn" id="btnImportJson">匯入 JSON</button><input type="file" id="importFile" accept="application/json,.json" hidden></div></div>
-        </div></div>
+        </div>
       </section>
 
     </main>

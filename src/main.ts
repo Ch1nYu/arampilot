@@ -250,7 +250,14 @@ document.querySelectorAll("input[type=range]").forEach((r) => {
       ? (input.nextElementSibling as HTMLInputElement)
       : null;
   const out = input.parentElement?.querySelector(".val") as HTMLElement | null;
+  const paint = () => {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const pct = max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0;
+    input.style.setProperty("--p", `${pct}%`);
+  };
   const upd = () => {
+    paint();
     if (numBuddy && numBuddy.value !== input.value) {
       numBuddy.value = input.value;
     }
@@ -609,7 +616,12 @@ function renderLogs() {
       <div>${escapeHtml(r.title)}<span class="reason">${escapeHtml(r.reason)}</span></div>
     </div>`;
   const elShort = document.getElementById("logShort");
-  if (elShort) elShort.innerHTML = logHistory.slice(0, 5).map(toHtml).join("");
+  if (elShort) {
+    const last = logHistory[0];
+    elShort.innerHTML = last
+      ? `<span class="t">${last.time}</span><span class="x">${escapeHtml(last.title)}</span><span class="r">${escapeHtml(last.reason)}</span>`
+      : `<span class="x" style="color:var(--dim)">尚無紀錄</span>`;
+  }
   const elFull = document.getElementById("logFull");
   if (elFull) {
     const rows = logFilter === "all" ? logHistory : logHistory.filter((r) => r.kind === logFilter);
@@ -1454,13 +1466,41 @@ function applyBattleToTiers() {
     "二選一順位已套用",
     `已將 ${battlePool.length} 位英雄依對決權重寫入【共用 · ${pkTargetScope}】順位`
   );
-  go("priority");
+  go("hero");
 }
 
+/* Hero page tabs: 優先序 / 二選一 */
+function activateHeroTab(tab: string) {
+  document.querySelectorAll("#heroTabs span").forEach((s) =>
+    s.classList.toggle("on", (s as HTMLElement).dataset.heroTab === tab)
+  );
+  const priority = document.getElementById("tab-priority");
+  const battle = document.getElementById("tab-battle");
+  if (priority) priority.style.display = tab === "priority" ? "" : "none";
+  if (battle) battle.style.display = tab === "battle" ? "" : "none";
+  if (tab === "battle") {
+    syncFlashPool();
+    syncBattlePool();
+  }
+}
+document.getElementById("heroTabs")?.addEventListener("click", (e) => {
+  const t = (e.target as HTMLElement).closest("[data-hero-tab]") as HTMLElement | null;
+  if (t?.dataset.heroTab) activateHeroTab(t.dataset.heroTab);
+});
+document.getElementById("btnGotoBattle")?.addEventListener("click", () => {
+  go("hero");
+  activateHeroTab("battle");
+});
+
 document.addEventListener("keydown", (e) => {
-  const battlePage = document.getElementById("p-battle");
+  const battlePage = document.getElementById("tab-battle");
+  const heroPage = document.getElementById("p-hero");
   const tag = (e.target as HTMLElement)?.tagName;
-  if (!battlePage?.classList.contains("on") || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (
+    !heroPage?.classList.contains("on") ||
+    battlePage?.style.display === "none" ||
+    tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA"
+  ) return;
 
   if (currentBattleStage === "flash") {
     const tierMap: Record<string, string> = {
@@ -2043,8 +2083,8 @@ function updateConnectionUI(connected: boolean, port?: number) {
     updateMatchStatusBadge(`LCU 已連線 (${port || "OK"})`, "on");
   } else {
     updateMatchStatusBadge("等待客戶端", "warn");
-    const phase = document.getElementById("phasePill");
-    if (phase) phase.textContent = "等待連線";
+    const phase = document.getElementById("overviewPhase");
+    if (phase) phase.innerHTML = `<i></i><em>等待連線</em>`;
   }
 }
 
@@ -2167,7 +2207,6 @@ const TRADE_VERDICT_DEFAULT = "條件外或組排好友設為手動時，由你�
 let champUiState: ChampSelectUiState = { ...EMPTY_UI_STATE };
 let lastChampSelectData: any = null;
 let overviewMyChampId = 0;
-let ovSpellTrayOpen = false;
 
 function isAlliedMember(member: any): boolean {
   if (!member) return false;
@@ -2184,41 +2223,11 @@ function effectiveSecondarySpell(myChamp: TierChampion | undefined): number {
   return isSupportedSecondarySpell(fallback) ? fallback : DEFAULT_SECONDARY_SPELL_ID;
 }
 
-/** Minimal inline secondary spell icon row shown only when holding a champion in ChampSelect. */
-function renderMyChampSpells(myChamp: TierChampion | undefined): string {
-  const secId = effectiveSecondarySpell(myChamp);
-  const primaryKey = primarySpellKeyFromUI();
-  const secKey = primaryKey === "F" ? "D" : "F";
-  const extraSelected = EXTRA_SECONDARY_SPELL_IDS.includes(secId) ? secId : null;
-  const pick = (id: number) =>
-    `<button class="spell-btn${secId === id ? " on" : ""}" data-pick-spell="${id}" title="${escapeHtml(
-      `${secKey} 鍵帶${spellName(id)}（點擊立即切換並記住此英雄偏好）`
-    )}">${spellIconHtml(id)}</button>`;
-  const moreBtn =
-    extraSelected != null
-      ? `<button class="spell-btn on" data-toggle-more-spells="1" title="其他召喚師技能（目前：${escapeHtml(
-          spellName(extraSelected)
-        )}）">${spellIconHtml(extraSelected)}</button>`
-      : `<button class="spell-btn" data-toggle-more-spells="1" title="展開其他召喚師技能">⋯</button>`;
-
-  return `
-    <div class="ov-spells">
-      <div class="ov-spell-picker">
-        <span class="ov-spell-lbl">${secKey} 副技能</span>
-        ${MAIN_SECONDARY_SPELL_IDS.map(pick).join("")}
-        ${moreBtn}
-      </div>
-      <div class="ov-spell-tray${ovSpellTrayOpen ? " open" : ""}">${EXTRA_SECONDARY_SPELL_IDS.map(pick).join(
-        ""
-      )}</div>
-    </div>`;
-}
-
 function renderMyChampColumn(
   myChampId: number,
   myChamp: TierChampion | undefined,
   myScore: number | null,
-  benchDiff: number
+  _benchDiff: number
 ) {
   const el = document.getElementById("miniMyChamp");
   if (!el) return;
@@ -2228,29 +2237,37 @@ function renderMyChampColumn(
     champUiState.manual_hold_champ_id != null &&
     champUiState.manual_hold_champ_id === myChampId;
   const locked = myChamp?.f === "lock";
-  const note = myChampId > 0 ? `${myChamp?.t || "未分類"} ${myScore ?? "—"} · 選角中` : "尚未進入選角";
+  // Overview is read-only: spells are display-only here; editing lives in 設定.
   const avatar = myChampId > 0 ? img(myChampId, name) : `<span class="ph">?</span>`;
-  const holds = [
-    held ? `<span class="ov-hold">⚠️ 手動保護中：後端判定不會換走（你手動換過）</span>` : "",
-    locked ? `<span class="ov-hold">🔒 不換出：已鎖定保護</span>` : "",
-  ].join("");
-  const verdict =
-    myChampId <= 0
-      ? "後端判定：尚未進入選角"
-      : held
-        ? `後端判定：保留${escapeHtml(name)}（手動選擇）`
-        : locked
-          ? `後端判定：保留${escapeHtml(name)}（已鎖定不換出）`
-          : `後端判定：自動監控板凳中（門檻 ≥ +${benchDiff} 分）`;
+  const tag =
+    myChampId > 0 && held
+      ? `<span class="tag">手動保護中</span>`
+      : myChampId > 0 && locked
+        ? `<span class="tag">已鎖定</span>`
+        : "";
 
   el.innerHTML = `
-    <div class="lbl">我的英雄</div>
-    <div class="ov-champ">${avatar}<div><div class="nm">${escapeHtml(name)}</div><div class="note">${escapeHtml(
-      note
-    )}</div></div></div>
-    ${holds}
-    ${myChampId > 0 ? renderMyChampSpells(myChamp) : ""}
-    <div class="ov-verdict">${verdict}</div>`;
+    <h3>我的英雄</h3>
+    <div class="hero">
+      <span class="avatar">${avatar}</span>
+      <div>
+        <div class="nm">${escapeHtml(name)}</div>
+        <div class="meta">${myChamp ? `${escapeHtml(myChamp.t || "未分類")} ${myScore ?? "—"} 分` : "尚未選角"}</div>
+      </div>
+    </div>
+    ${myChampId > 0 ? renderOverviewSpells(myChamp) : ""}
+    ${tag ? `<div class="hero-tag">${tag}</div>` : ""}`;
+}
+
+/** Display-only spell chips for the overview (editing lives in 設定). */
+function renderOverviewSpells(myChamp: TierChampion | undefined): string {
+  const secId = effectiveSecondarySpell(myChamp);
+  const primaryKey = primarySpellKeyFromUI();
+  const flashId = FLASH_SPELL_ID;
+  const spell = (id: number, key: string) =>
+    `<span class="spell">${spellIconHtml(id)}<span class="key">${key}</span></span>`;
+  const flashInPrimary = primaryKey === "D";
+  return `<div class="spells">${flashInPrimary ? spell(flashId, "D") + spell(secId, "F") : spell(secId, "D") + spell(flashId, "F")}</div>`;
 }
 
 function renderBenchColumn(
@@ -2281,58 +2298,46 @@ function renderBenchColumn(
       e.score - baseScore >= benchDiff
   );
   const bestId = eligible.length ? eligible[0].id : null;
+  const best = eligible.length ? eligible[0] : null;
 
   const rows = entries
     .map((e) => {
       const name = e.champ?.n || `ID:${e.id}`;
-      const tier = e.champ?.t || "未分類";
       const diff = e.score != null && baseScore != null ? e.score - baseScore : null;
       const retrying = champUiState.bench_retry_target === e.id;
-      const button = (primary: boolean) =>
-        `<button class="btn${primary ? " primary" : ""}" data-swap-bench="${e.id}"${
-          retrying ? " disabled" : ""
-        }>${retrying ? "搶角中…" : "搶角"}</button>`;
-
-      let meta: string;
-      let diffHtml: string;
-      let action: string;
-      if (tier === "封印" || e.champ?.f === "nograb") {
-        meta = `${tier} ${e.score ?? "—"} · 不搶`;
-        diffHtml = "";
-        action = `<span class="ban">不搶</span>`;
-      } else if (tier === "未分類") {
-        meta = "未分類（基準 40） · 只手動";
-        diffHtml = `<span class="diff muted">${signedDiff(diff)}</span>`;
-        action = button(false);
-      } else if (diff == null || diff < benchDiff) {
-        meta = `${tier} ${e.score} · 未達門檻（${benchDiff}）只手動`;
-        diffHtml = `<span class="diff muted">${signedDiff(diff)}</span>`;
-        action = button(false);
-      } else {
-        meta = `${tier} ${e.score}`;
-        diffHtml = `<span class="diff">${signedDiff(diff)}</span>`;
-        action = button(true);
-      }
-
-      return `<div class="bench-row${e.id === bestId ? " best" : ""}">${img(
+      const swappedIn = myChampIdGlobal() === e.id;
+      const hot = e.id === bestId && !swappedIn;
+      const manual = hot && myChampIdGlobal() > 0;
+      return `<div class="bench-row${hot ? " hot" : ""}"${
+        manual ? ` data-swap-bench="${e.id}" title="點擊手動換上" style="cursor:pointer"` : ""
+      }>${img(
         e.id,
         name
-      )}<div class="bench-main"><div class="nm">${escapeHtml(name)}</div><div class="meta">${escapeHtml(
-        meta
-      )}</div></div>${diffHtml}${action}</div>`;
+      )}
+        <span class="nm">${escapeHtml(name)}</span>
+        ${hot ? `<span class="will">${retrying ? "搶角中…" : "會換入"}</span>` : ""}
+        <span class="delta">${signedDiff(diff)}</span>
+      </div>`;
     })
     .join("");
 
-  const verdict = champUiState.bench_verdict
-    ? escapeHtml(champUiState.bench_verdict)
-    : entries.length > 0
-      ? `後端判定：自動監控板凳中（門檻 ≥ +${benchDiff} 分）`
-      : "後端判定：等待板凳解鎖";
+  const caption = best
+    ? `${escapeHtml(best.champ?.n || `ID:${best.id}`)}高於手上 ${signedDiff(best.score != null && baseScore != null ? best.score - baseScore : null)}（門檻 ${benchDiff}）`
+    : champUiState.bench_verdict
+      ? escapeHtml(champUiState.bench_verdict)
+      : entries.length > 0
+        ? `未達門檻（${benchDiff}），不會自動換入`
+        : `還沒進選角`;
 
   el.innerHTML = `
-    <div class="lbl">板凳（全部，依分數高→低排）</div>
-    <div class="bench-list">${rows || `<div class="ov-empty">板凳尚無英雄</div>`}</div>
-    <div class="ov-verdict">${verdict}</div>`;
+    <h3>板凳<span class="sub">依權重排序</span></h3>
+    <div class="bench-list">${rows || `<div class="ov-empty">板凳還沒解鎖</div>`}</div>
+    <div class="bench-cap">${caption}</div>`;
+}
+
+// Overview column index passed via renderOverviewColumns (avoids extra params).
+function myChampIdGlobal(): number {
+  return overviewMyChampId;
 }
 
 function renderTradeColumn(
@@ -2343,7 +2348,7 @@ function renderTradeColumn(
   baseScore: number | null,
   tradeDiff: number
 ) {
-  const el = document.getElementById("miniTrade");
+  const el = document.getElementById("tradeAlert");
   if (!el) return;
   const verdict = champUiState.trade_verdict
     ? escapeHtml(champUiState.trade_verdict)
@@ -2357,10 +2362,9 @@ function renderTradeColumn(
   const offeredId = Number(member?.championId) || 0;
 
   if (!trade || offeredId <= 0) {
-    el.innerHTML = `
-      <div class="lbl">隊友換角請求</div>
-      <div class="ov-empty">無進行中請求</div>
-      <div class="ov-verdict">${verdict}</div>`;
+    // No pending request: the banner takes zero space.
+    el.style.display = "none";
+    el.innerHTML = "";
     return;
   }
 
@@ -2368,7 +2372,6 @@ function renderTradeColumn(
   const myChamp = myChampId > 0 ? profile.find((c) => c.id === myChampId) : undefined;
   const offeredScore = scores[offeredId] ?? null;
   const diff = offeredScore != null && baseScore != null ? offeredScore - baseScore : null;
-  const reaches = diff != null && diff >= tradeDiff;
   const isFriend = isAlliedMember(member);
   const traderName =
     member?.gameName ||
@@ -2379,23 +2382,16 @@ function renderTradeColumn(
   const tradeId = Number(trade.id) || 0;
   const buttons =
     tradeId > 0
-      ? `<div class="ov-act"><button class="btn primary" data-accept-trade="${tradeId}">同意</button><button class="btn" data-decline-trade="${tradeId}">拒絕</button></div>`
+      ? `<span class="btn primary" data-accept-trade="${tradeId}">同意</span><span class="btn" data-decline-trade="${tradeId}">拒絕</span>`
       : "";
 
+  el.style.display = "";
   el.innerHTML = `
-    <div class="lbl">隊友換角請求</div>
-    <div class="trader"><span class="ov-chip ${isFriend ? "friend" : "stranger"}">${
-      isFriend ? "組排/好友" : "一般路人"
-    }</span><b>${escapeHtml(String(traderName))}</b></div>
-    <div class="ov-trade-body">想用 <b class="offer-nm">${escapeHtml(
+    <img src="${ICON(offeredId)}" alt="" />
+    <span class="tx"><b>${escapeHtml(String(traderName))}</b>（${isFriend ? "隊友" : "路人"}）想用 <b>${escapeHtml(
       offered?.n || `ID:${offeredId}`
-    )}</b> 換你的 <b class="my-nm">${escapeHtml(
-      myName
-    )}</b><br><span class="ov-trade-diff">分差 ${signedDiff(diff)} · ${
-      reaches ? "達門檻" : "未達門檻"
-    }</span></div>
-    ${buttons}
-    <div class="ov-verdict">${verdict}</div>`;
+    )}</b> 換你的 <b>${escapeHtml(myName)}</b>・分差 ${signedDiff(diff)}（門檻 ${tradeDiff}）${verdict ? `・${verdict}` : ""}</span>
+    <span class="btns">${buttons}</span>`;
 }
 
 function renderOverviewColumns() {
@@ -2439,61 +2435,7 @@ document.getElementById("miniBench")?.addEventListener("click", (e) => {
   }
 });
 
-/** Remember the secondary spell for the held champion and push it to LCU right away. */
-async function pickSecondarySpell(pickedId: number) {
-  if (!isSupportedSecondarySpell(pickedId)) return;
-  const myChampId = overviewMyChampId;
-  const champ = myChampId > 0 ? profileList.find((c) => c.id === myChampId) : undefined;
-  const modeDefault = currentSettings.default_secondary_spell;
-  const defaultSpell = isSupportedSecondarySpell(modeDefault) ? modeDefault : DEFAULT_SECONDARY_SPELL_ID;
-
-  let secId = pickedId;
-  let isCustom = false;
-  let champName = "";
-  if (myChampId > 0 && champ) {
-    // Matching the default clears the override so the champion stays "預設".
-    champ.secSpell = pickedId === defaultSpell ? undefined : pickedId;
-    isCustom = isSupportedSecondarySpell(champ.secSpell);
-    secId = isCustom ? champ.secSpell! : defaultSpell;
-    champName = champ.n;
-  } else {
-    currentSettings.default_secondary_spell = pickedId;
-    secId = pickedId;
-    renderDefaultSpellPicker();
-  }
-
-  ovSpellTrayOpen = false;
-  renderOverviewColumns();
-  renderSpellOverrideCount();
-  // Persist to Rust BEFORE calling apply_summoner_spells so the ensuing LCU WebSocket
-  // event never reads a stale config and reverts our newly chosen spell!
-  await saveConfigImmediate();
-
-  if (!(isLcuConnected && lastKnownPhase === "ChampSelect")) return;
-  const [spell1Id, spell2Id] = resolveSpellPair(secId, primarySpellKeyFromUI());
-  const label = `${champName ? `【${champName}】` : ""}D ${spellName(spell1Id)} ＋ F ${spellName(
-    spell2Id
-  )}（${isCustom ? "英雄專屬記憶" : "模式預設"}）`;
-  try {
-    await invoke("apply_summoner_spells", { spell1Id, spell2Id, label });
-  } catch (err) {
-    addLog("err", "切換召喚師技能失敗", String(err));
-  }
-}
-
-document.getElementById("miniMyChamp")?.addEventListener("click", (e) => {
-  const target = e.target as HTMLElement;
-  if (target.closest("[data-toggle-more-spells]")) {
-    ovSpellTrayOpen = !ovSpellTrayOpen;
-    renderOverviewColumns();
-    return;
-  }
-  const pick = target.closest("[data-pick-spell]") as HTMLElement | null;
-  if (!pick) return;
-  void pickSecondarySpell(Number(pick.dataset.pickSpell));
-});
-
-document.getElementById("miniTrade")?.addEventListener("click", (e) => {
+document.getElementById("tradeAlert")?.addEventListener("click", (e) => {
   const acc = (e.target as HTMLElement).closest("[data-accept-trade]") as HTMLElement | null;
   if (acc) {
     const tradeId = Number(acc.dataset.acceptTrade);
@@ -2567,8 +2509,10 @@ async function updateGameflowPhase(phase: string) {
   const modeLabel = currentModeLabel();
   const phaseLabel = PHASE_LABELS[phase] || phase;
 
-  const pill = document.getElementById("phasePill");
-  if (pill) pill.textContent = `${phaseLabel} · ${modeLabel}`;
+  // Single phase indicator lives in the overview header (titlebar keeps only
+  // the connection pill now).
+  const phaseNow = document.getElementById("overviewPhase");
+  if (phaseNow) phaseNow.innerHTML = `<i></i><em>${phaseLabel} · ${modeLabel}</em>`;
 
   const stepOrder = ["Lobby", "Matchmaking", "ReadyCheck", "ChampSelect", "InProgress"];
   // When connected to the LoL client home screen ("None") or room ("Lobby"), light up "大廳" (index 0).
@@ -2592,19 +2536,8 @@ async function updateGameflowPhase(phase: string) {
 }
 
 function updateOverviewModeSub() {
-  const el = document.getElementById("overviewModeSub");
-  if (!el) return;
-  if (currentQueueId != null) {
-    if (MAYHEM_QUEUE_IDS.has(currentQueueId)) {
-      el.innerHTML = `目前對戰房間：<b>海克斯 Mayhem</b>（queue ${currentQueueId}） · 已套用共用優先序與設定。`;
-    } else if (ARAM_QUEUE_IDS.has(currentQueueId)) {
-      el.innerHTML = `目前對戰房間：<b>一般 ARAM</b>（queue ${currentQueueId}） · 已套用共用優先序與設定。`;
-    } else {
-      el.innerHTML = `目前對戰房間：<b>其他模式（非大亂鬥，選角與技能自動化不介入）</b>。`;
-    }
-  } else {
-    el.innerHTML = `一般 ARAM 與海克斯 Mayhem 共用同一套英雄優先序與自動化設定。`;
-  }
+  // Mode is shown in the header phase indicator now; nothing to narrate here.
+  return;
 }
 
 function notifyAccept() {
