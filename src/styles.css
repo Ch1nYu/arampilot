@@ -209,7 +209,7 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 .chk button.on { border-color: var(--accent); color: var(--accent); }
 .chk button.on::before { content: "✓ "; }
 .range { display: flex; align-items: center; gap: 10px; flex: none; }
-input[type=range] { -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--p, 50%), var(--line2) var(--p, 50%)); outline: none; cursor: pointer; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 2px; outline: none; cursor: pointer; --tw: 14px; background: linear-gradient(to right, var(--accent) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw))), var(--line2) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw)))); }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); }
 input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
 .num-in { width: 56px; padding: 4px 6px; text-align: center; font-family: var(--mono); }

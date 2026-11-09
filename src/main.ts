@@ -253,8 +253,9 @@ document.querySelectorAll("input[type=range]").forEach((r) => {
   const paint = () => {
     const min = Number(input.min || 0);
     const max = Number(input.max || 100);
-    const pct = max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0;
-    input.style.setProperty("--p", `${pct}%`);
+    const frac = max > min ? (Number(input.value) - min) / (max - min) : 0;
+    // Unitless fraction; CSS aligns the fill edge to the thumb center.
+    input.style.setProperty("--p", String(frac));
   };
   const upd = () => {
     paint();
