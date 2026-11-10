@@ -13,7 +13,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Tag must match the app version
         shell: pwsh
@@ -28,7 +28,7 @@ jobs:
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -47,6 +47,19 @@ jobs:
         working-directory: src-tauri
         run: cargo test --quiet
 
+      # The annotated tag message becomes the release notes and the text the
+      # in-app update dialog shows: git tag -a v0.1.1 -m "notes".
+      - name: Release notes from the tag message
+        id: notes
+        shell: bash
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          {
+            echo "body<<EOF_NOTES"
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME"
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -55,7 +68,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ARAMPilot ${{ github.ref_name }}
-          releaseBody: 請下載下方的 `*-setup.exe` 安裝。已安裝的使用者會在 App 裡收到更新通知。
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
