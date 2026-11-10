@@ -2313,19 +2313,37 @@ document.getElementById("btnSortUnranked")?.addEventListener("click", () => {
 });
 
 /* ---------- General Settings: JSON Export / Import ---------- */
-document.getElementById("btnExportJson")?.addEventListener("click", () => {
+document.getElementById("btnExportJson")?.addEventListener("click", async () => {
+  const text = JSON.stringify(collectConfig(), null, 2);
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const suggested = `aram-assistant-config-${stamp}.json`;
+  const picker = (window as any).showSaveFilePicker as undefined | ((o: unknown) => Promise<any>);
   try {
-    const blob = new Blob([JSON.stringify(collectConfig(), null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
+    if (picker) {
+      // Native save dialog (WebView2 File System Access API): user picks folder and name.
+      const handle = await picker({
+        suggestedName: suggested,
+        types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      addLog("act", "已匯出設定檔", handle.name);
+      return;
+    }
+    // Fallback: plain download into the default Downloads folder.
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = "aram-assistant-config.json";
+    a.download = suggested;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    addLog("act", "已匯出設定檔", "aram-assistant-config.json");
+    addLog("act", "已匯出設定檔", `${suggested}（存到下載資料夾）`);
   } catch (e) {
+    if ((e as DOMException)?.name === "AbortError") return; // user cancelled the dialog
     addLog("err", "匯出設定檔失敗", String(e));
   }
 });
