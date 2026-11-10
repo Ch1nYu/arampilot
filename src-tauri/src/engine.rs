@@ -323,12 +323,12 @@ impl ChampSelectRuleEngine {
         manual_bench_hold: Option<i32>,
     ) -> BenchDecision {
         // If the player manually picked a champion, do not auto-swap away from it!
-        if let Some(held_id) = manual_bench_hold {
-            if held_id == my_champ_id {
-                return BenchDecision::Skip {
-                    reason: "玩家已手動選擇英雄，保留手動選擇".to_string(),
-                };
-            }
+        if let Some(held_id) = manual_bench_hold
+            && held_id == my_champ_id
+        {
+            return BenchDecision::Skip {
+                reason: "玩家已手動選擇英雄，保留手動選擇".to_string(),
+            };
         }
 
         if !settings.auto_bench_swap {
@@ -505,6 +505,10 @@ pub struct ChampSelectSessionTracker {
     pub bench_retry_target: Option<i32>,
     pub manual_bench_hold: Option<i32>, // Champion the player manually picked; never auto-swap away from it
     pub bot_expected_champ: Option<i32>, // Champion the bot is acquiring, to tell bot swaps from manual picks
+    /// Champion an overview "搶角" click is chasing. Getting it (by WS event or
+    /// HTTP reply, in either order) always ends in a manual hold, and auto bench
+    /// stays out of the way while it is set.
+    pub manual_snipe_target: Option<i32>,
     pub our_offer_cards: Vec<i32>,       // The 2~3 cards offered to us
     pub our_pick_time: Option<std::time::Instant>, // When our initial selection happened
     pub card_picked: bool,
@@ -528,6 +532,9 @@ pub struct ChampSelectSessionTracker {
     pub bot_set_spells: Option<(i32, i32)>,
     /// True once the player manually changes their summoner spells in the LoL client during this session.
     pub manual_spell_override: bool,
+    /// The bot's previous spell pair: session snapshots queued before the
+    /// latest PATCH landed still carry it, and must not read as a manual change.
+    pub prev_bot_set_spells: Option<(i32, i32)>,
 }
 
 impl ChampSelectSessionTracker {
@@ -539,6 +546,7 @@ impl ChampSelectSessionTracker {
         self.bench_retry_target = None;
         self.manual_bench_hold = None;
         self.bot_expected_champ = None;
+        self.manual_snipe_target = None;
         self.our_offer_cards.clear();
         self.our_pick_time = None;
         self.card_picked = false;
@@ -551,13 +559,49 @@ impl ChampSelectSessionTracker {
         self.allies_fetch_attempts = 0;
         self.last_bench_skip_log_key = None;
         self.last_bench_skip_log_time = None;
-        self.manual_snipe_generation = 0;
+        // manual_snipe_generation stays monotonic: a loop from the previous
+        // session must never match the generation of a new snipe.
         self.last_bench_verdict = None;
         self.last_trade_verdict = None;
         self.last_applied_spells = None;
         self.initial_client_spells = None;
         self.bot_set_spells = None;
         self.manual_spell_override = false;
+        self.prev_bot_set_spells = None;
+    }
+
+    /// Classify our champion changing from `old_champ_id` to `new_champ_id`.
+    ///
+    /// The WS event and the HTTP reply of a swap can arrive in either order, so
+    /// the outcome only depends on what the tracker expected:
+    /// - the overview snipe target (or the held champion) → manual hold;
+    /// - what the bot was acquiring (auto bench / auto trade) → bot swap, no hold;
+    /// - anything else → the player picked it themselves → manual hold.
+    pub fn observe_champion_change(&mut self, old_champ_id: i32, new_champ_id: i32) {
+        if old_champ_id == 0 || new_champ_id == 0 || new_champ_id == old_champ_id {
+            return;
+        }
+        let manual_snipe_landed = self.manual_snipe_target == Some(new_champ_id)
+            || self.manual_bench_hold == Some(new_champ_id);
+        let bot_initiated = self.bot_expected_champ == Some(new_champ_id)
+            || self.bench_retry_target == Some(new_champ_id);
+        self.manual_bench_hold = if manual_snipe_landed || !bot_initiated {
+            Some(new_champ_id)
+        } else {
+            None
+        };
+        self.manual_snipe_target = None;
+        self.bench_retry_target = None;
+        self.bot_expected_champ = None;
+    }
+
+    /// Remember a spell pair the bot just applied (keeping the previous one).
+    pub fn record_bot_spells(&mut self, pair: (i32, i32)) {
+        if self.bot_set_spells != Some(pair) {
+            self.prev_bot_set_spells = self.bot_set_spells;
+        }
+        self.bot_set_spells = Some(pair);
+        self.initial_client_spells = Some(pair);
     }
 
     /// Observe the local player's `(spell1Id, spell2Id)` from a champ-select snapshot.
@@ -575,7 +619,10 @@ impl ChampSelectSessionTracker {
                 false
             }
             Some(prev) => {
-                if pair == prev || Some(pair) == self.bot_set_spells {
+                if pair == prev
+                    || Some(pair) == self.bot_set_spells
+                    || Some(pair) == self.prev_bot_set_spells
+                {
                     self.initial_client_spells = Some(pair);
                     false
                 } else {
@@ -592,6 +639,70 @@ impl ChampSelectSessionTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stale_snapshot_with_previous_bot_spells_is_not_manual() {
+        let mut tr = ChampSelectSessionTracker::default();
+        tr.record_bot_spells((4, 6)); // champion A
+        assert!(!tr.observe_client_spells(Some((4, 6))));
+        tr.record_bot_spells((4, 14)); // bench swap to B, PATCH in flight
+        // A queued event still shows A's pair.
+        assert!(!tr.observe_client_spells(Some((4, 6))));
+        assert!(!tr.manual_spell_override);
+        assert!(!tr.observe_client_spells(Some((4, 14))));
+        // A pair the bot never set is a real manual change.
+        assert!(tr.observe_client_spells(Some((4, 7))));
+        assert!(tr.manual_spell_override);
+    }
+
+    #[test]
+    fn test_manual_snipe_hold_survives_ws_before_http_reply() {
+        // Overview snipe for 7 while holding 1; the WS event lands first.
+        let mut tr = ChampSelectSessionTracker {
+            manual_snipe_target: Some(7),
+            bench_retry_target: Some(7),
+            bot_expected_champ: Some(7),
+            ..Default::default()
+        };
+        tr.observe_champion_change(1, 7);
+        assert_eq!(tr.manual_bench_hold, Some(7));
+        assert_eq!(tr.manual_snipe_target, None);
+        assert_eq!(tr.bench_retry_target, None);
+    }
+
+    #[test]
+    fn test_manual_snipe_hold_survives_http_reply_before_ws() {
+        // HTTP success already set the hold and cleared the expectations.
+        let mut tr = ChampSelectSessionTracker {
+            manual_bench_hold: Some(7),
+            ..Default::default()
+        };
+        tr.observe_champion_change(1, 7);
+        assert_eq!(tr.manual_bench_hold, Some(7));
+    }
+
+    #[test]
+    fn test_bot_swap_and_auto_trade_do_not_set_a_manual_hold() {
+        let mut tr = ChampSelectSessionTracker {
+            bot_expected_champ: Some(9),
+            ..Default::default()
+        };
+        tr.observe_champion_change(1, 9);
+        assert_eq!(tr.manual_bench_hold, None);
+        assert_eq!(tr.bot_expected_champ, None);
+    }
+
+    #[test]
+    fn test_unexpected_change_is_a_manual_pick() {
+        let mut tr = ChampSelectSessionTracker {
+            bot_expected_champ: Some(9),
+            manual_snipe_target: Some(5),
+            ..Default::default()
+        };
+        tr.observe_champion_change(1, 3);
+        assert_eq!(tr.manual_bench_hold, Some(3));
+        assert_eq!(tr.manual_snipe_target, None, "a manual pick ends the overview snipe");
+    }
 
     fn sample_profile() -> Vec<ChampionProfileItem> {
         vec![

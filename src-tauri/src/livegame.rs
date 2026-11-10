@@ -16,6 +16,15 @@ pub struct LiveGamePoller {
     poll_gen: Arc<AtomicU64>,
     polling: Arc<AtomicBool>,
     alert_tx: broadcast::Sender<String>,
+    /// Game time and wall-clock instant of the last alert. Survives a poller
+    /// restart (LCU reconnect mid-game), so the same game is not alerted twice.
+    last_alert: Arc<std::sync::Mutex<Option<(f64, std::time::Instant)>>>,
+}
+
+/// Whether an alert sent at `alert_game_time`, `alert_age_secs` ago, belongs to
+/// the game now at `now_game_time`: in the same game both clocks advance together.
+pub fn alert_is_same_game(alert_game_time: f64, alert_age_secs: f64, now_game_time: f64) -> bool {
+    now_game_time >= alert_game_time && ((now_game_time - alert_game_time) - alert_age_secs).abs() <= 30.0
 }
 
 impl Default for LiveGamePoller {
@@ -39,6 +48,7 @@ impl LiveGamePoller {
             poll_gen: Arc::new(AtomicU64::new(0)),
             polling: Arc::new(AtomicBool::new(false)),
             alert_tx,
+            last_alert: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -59,6 +69,7 @@ impl LiveGamePoller {
         tauri::async_runtime::spawn(async move {
             let mut next_trigger_time = ff_seconds;
             let mut triggered_this_game = false;
+            let mut first_reading = true;
 
             loop {
                 if self.poll_gen.load(Ordering::SeqCst) != generation {
@@ -69,7 +80,26 @@ impl LiveGamePoller {
                 if (!triggered_this_game || cooldown_reminder)
                     && let Ok(stats) = self.fetch_gamestats().await
                 {
+                    if first_reading {
+                        first_reading = false;
+                        // Restarted mid-game (e.g. LCU reconnect): resume after the
+                        // alert this game already had instead of firing it again.
+                        let previous = *self.last_alert.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some((alert_time, at)) = previous
+                            && alert_is_same_game(alert_time, at.elapsed().as_secs_f64(), stats.game_time)
+                        {
+                            triggered_this_game = true;
+                            if cooldown_reminder {
+                                next_trigger_time = alert_time + 180.0;
+                            } else {
+                                tokio::time::sleep(next_sleep).await;
+                                continue;
+                            }
+                        }
+                    }
                     if stats.game_time >= next_trigger_time {
+                        *self.last_alert.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some((stats.game_time, std::time::Instant::now()));
                         triggered_this_game = true;
                         let _ = self.alert_tx.send(format!(
                             "遊戲時間已達 {:.0} 秒（最早可投降時間），可以 /ff 投降了！",
@@ -184,6 +214,16 @@ mod tests {
         // Just verify channels and client build cleanly
         assert!(!poller.is_polling());
         assert_eq!(poller.poll_gen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_alert_is_same_game_only_when_clocks_agree() {
+        // Alert at 480s, 300s ago, game now at 781s: same game (reconnect).
+        assert!(alert_is_same_game(480.0, 300.0, 781.0));
+        // New game at 30s, alert from the previous game 20 minutes ago.
+        assert!(!alert_is_same_game(480.0, 1200.0, 30.0));
+        // New game already past 8:00 by the time we look, last alert long ago.
+        assert!(!alert_is_same_game(480.0, 3600.0, 500.0));
     }
 
     #[test]

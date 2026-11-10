@@ -2,8 +2,9 @@ pub mod config;
 pub mod engine;
 pub mod lcu;
 pub mod livegame;
+pub mod single_instance;
 
-use config::{AppConfig, ConfigManager};
+use config::{AppConfig, ConfigManager, SaveError};
 use engine::{
     BenchDecision, CardDecision, ChampSelectRuleEngine, ChampSelectSessionTracker, TradeDecision,
 };
@@ -21,7 +22,8 @@ type SharedLcu = Arc<LcuManager>;
 type SharedConfig = Arc<RwLock<AppConfig>>;
 type SharedTracker = Arc<tokio::sync::Mutex<ChampSelectSessionTracker>>;
 
-/// Identity of the currently logged-in LoL account; the active config file follows it.
+/// Identity of the currently logged-in LoL account, shown in the UI. Settings
+/// and rankings belong to this computer, not to the account.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActiveAccount {
     pub puuid: String,
@@ -31,71 +33,68 @@ pub struct ActiveAccount {
 
 type SharedAccount = Arc<RwLock<Option<ActiveAccount>>>;
 
-/// Swap the live config to the file that belongs to the logged-in account.
+/// Detect the logged-in account for display only.
 ///
-/// Runs on every LCU connect; a no-op while the same account is active.
-async fn sync_account_config(
+/// Runs on every LCU connect; a no-op while the same account is active. It
+/// never loads or swaps the config: `config.json` is the same for every account.
+async fn sync_active_account(
     app: &tauri::AppHandle,
     lcu: &SharedLcu,
-    config_lock: &SharedConfig,
     account_lock: &SharedAccount,
-) {
+) -> bool {
     let Some(raw) = lcu.fetch_current_summoner().await else {
-        return;
+        return false;
     };
     let Some(info) = lcu::parse_account_identity(&raw) else {
-        return;
+        return false;
     };
-    let same_account = account_lock
-        .read()
-        .await
-        .as_ref()
-        .map(|a| a.puuid.as_str())
-        .unwrap_or_default()
-        == info.puuid;
-    if same_account {
-        return;
-    }
-
-    let manager = ConfigManager::for_account(Some(&info.puuid));
-    let cfg = manager.load();
-    manager.record_last_puuid(&info.puuid);
     let account = ActiveAccount {
         puuid: info.puuid.clone(),
         display_name: info.display_name.clone(),
     };
-
-    // Swap the account and its config together under the account lock so a
-    // concurrent save can never observe (or write into) a mixed pair.
     let already_current = {
         let mut acc = account_lock.write().await;
-        if acc
-            .as_ref()
-            .map(|a| a.puuid.as_str())
-            == Some(info.puuid.as_str())
-        {
+        if acc.as_ref().map(|a| a.puuid.as_str()) == Some(info.puuid.as_str()) {
             true
         } else {
             *acc = Some(account.clone());
-            *config_lock.write().await = cfg.clone();
             false
         }
     };
     if already_current {
-        return;
+        return true;
     }
 
-    sync_tray_checks(app, &cfg);
-    let _ = app.emit("config-updated", &cfg);
     let _ = app.emit("account-changed", &account);
     let _ = app.emit(
         "lcu-log",
         serde_json::json!({
             "kind": "sys",
-            "title": "帳號設定已切換",
-            "reason": format!("目前帳號：{}", account.display_name),
+            "title": "目前帳號",
+            "reason": account.display_name,
         }),
     );
+    true
+}
+
+/// The client often reports its port before the summoner is loaded: keep
+/// trying for ~30s so the account name appears without an LCU reconnect.
+fn retry_account_sync(
+    app: tauri::AppHandle,
+    lcu: SharedLcu,
+    account_lock: SharedAccount,
+) {
+    spawn(async move {
+        for _ in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if !lcu.is_connected().await {
+                return;
+            }
+            if sync_active_account(&app, &lcu, &account_lock).await {
+                return;
+            }
+        }
+    });
 }
 
 /// Backend-owned champ select state pushed to the overview card.
@@ -193,17 +192,6 @@ pub fn is_aram_queue(queue_id: Option<i32>) -> bool {
     )
 }
 
-/// Queue id to the mode name shown next to the phase.
-fn tray_queue_label(queue_id: Option<i32>) -> &'static str {
-    if is_mayhem_queue(queue_id) {
-        "Mayhem"
-    } else if is_aram_queue(queue_id) {
-        "ARAM"
-    } else {
-        "其他"
-    }
-}
-
 /// Refresh the tray status rows and the icon tooltip.
 fn update_tray_status(
     app: &tauri::AppHandle,
@@ -225,7 +213,7 @@ fn update_tray_status(
             format!(
                 "狀態：{} · {}",
                 tray_phase_label(phase),
-                tray_queue_label(queue_id)
+                queue_mode_name(queue_id)
             ),
         )
     } else {
@@ -257,17 +245,14 @@ fn show_main_window(app: &tauri::AppHandle) {
 async fn handle_tray_toggle(
     app: &tauri::AppHandle,
     config_lock: &SharedConfig,
-    account_lock: &SharedAccount,
     id: &str,
 ) {
-    // Hold the account lock for the whole toggle: the swap path needs the write
-    // lock, so the account (and the config it selects) cannot change between
-    // the config read and the file write.
-    let account_guard = account_lock.read().await;
-    let start_puuid = account_guard
-        .as_ref()
-        .map(|a| a.puuid.clone());
-    let mut cfg = config_lock.read().await.clone();
+    // Read-modify-write under the config write lock, so a UI save landing in
+    // between is never overwritten with a stale copy.
+    let mut live = config_lock.write().await;
+    // The switch takes effect in memory even if the file write fails, so the
+    // user can always turn automation off for this run.
+    let cfg = &mut *live;
 
     // Both ARAM and Mayhem follow the tray toggle so the modes never drift apart.
     let (label, enabled) = match id {
@@ -308,12 +293,23 @@ async fn handle_tray_toggle(
         _ => return,
     };
 
-    // Locked by the account guard above: the account still matches start_puuid.
-    *config_lock.write().await = cfg.clone();
-    let _ = ConfigManager::for_account(start_puuid.as_deref()).save(&cfg);
-    drop(account_guard);
-    sync_tray_checks(app, &cfg);
-    let _ = app.emit("config-updated", &cfg);
+    // Write the file before releasing the config lock, so two writers can never
+    // land on disk in the opposite order from memory.
+    let snapshot = live.clone();
+    let saved = ConfigManager::new().save(&snapshot);
+    drop(live);
+    if let Err(err) = saved {
+        let _ = app.emit(
+            "lcu-log",
+            serde_json::json!({
+                "kind": "err",
+                "title": "系統匣切換未儲存",
+                "reason": format!("{label} 本次執行已生效，但沒有寫入設定檔：{err}"),
+            }),
+        );
+    }
+    sync_tray_checks(app, &snapshot);
+    let _ = app.emit("config-updated", &snapshot);
     let _ = app.emit(
         "lcu-log",
         serde_json::json!({
@@ -367,46 +363,47 @@ async fn get_app_config(state: State<'_, SharedConfig>) -> Result<AppConfig, Str
     Ok(state.read().await.clone())
 }
 
+/// `save_app_config` error. `kind` lets the frontend tell the outcomes apart
+/// without matching on text; `message` is exactly what it logs.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum SaveConfigError {
+    /// The unreadable-config guard refused the write.
+    LoadRefused { message: String },
+    /// Serializing or writing the file failed.
+    WriteFailed { message: String },
+}
+
 #[tauri::command]
 async fn save_app_config(
     app: tauri::AppHandle,
     state: State<'_, SharedConfig>,
-    account: State<'_, SharedAccount>,
     new_config: AppConfig,
-    expected_puuid: Option<String>,
-) -> Result<(), String> {
-    // Guard against the collect→save race: the frontend sends the puuid it
-    // collected against; if the logged-in account changed since, this payload
-    // belongs to the old account and must never land in the new account's file.
-    // The account read lock is held for the whole save: the swap path needs the
-    // write lock, so the account (and the config it selects) cannot change
-    // between the expected-puuid check and the file write.
-    let account_guard = account.read().await;
-    let active_puuid = account_guard
-        .as_ref()
-        .map(|a| a.puuid.clone());
-    if let Some(expected) = expected_puuid.as_deref()
-        && active_puuid.as_deref() != Some(expected)
-    {
-        let _ = app.emit(
-            "lcu-log",
-            serde_json::json!({
-                "kind": "skip",
-                "title": "設定未寫入",
-                "reason": "帳號已切換，舊帳號的設定已捨棄",
-            }),
-        );
-        return Err("帳號已切換，設定未寫入".to_string());
-    }
-
+) -> Result<(), SaveConfigError> {
     let mut sanitized = new_config;
     sanitized.sanitize();
-    *state.write().await = sanitized.clone();
-    ConfigManager::for_account(active_puuid.as_deref()).save(&sanitized)?;
-    drop(account_guard);
+    // Hold the config write lock through the file write, so a tray toggle
+    // racing this save can never leave an older copy on disk than in memory.
+    // Memory follows the UI even when the write fails (reported to the UI), so
+    // switching automation off always takes effect for this run.
+    let mut live = state.write().await;
+    let auto_start_changed = live.auto_start != sanitized.auto_start;
+    *live = sanitized.clone();
+    let saved = ConfigManager::new().save(&sanitized);
+    // Saves fire every few hundred ms while dragging; only touch the Run key
+    // when the switch itself flips. Requested under the lock so requests keep
+    // the order of the config changes (the request never blocks on reg.exe).
+    if auto_start_changed {
+        config::sync_windows_auto_start(sanitized.auto_start);
+    }
+    drop(live);
     sync_tray_checks(&app, &sanitized);
-    config::sync_windows_auto_start(sanitized.auto_start);
-    Ok(())
+    saved.map_err(|err| match err {
+        SaveError::LoadRefused => SaveConfigError::LoadRefused {
+            message: config::LOAD_FAILED_SAVE_REFUSED.to_string(),
+        },
+        SaveError::Write(message) => SaveConfigError::WriteFailed { message },
+    })
 }
 
 #[tauri::command]
@@ -414,16 +411,31 @@ async fn get_active_account(state: State<'_, SharedAccount>) -> Result<Option<Ac
     Ok(state.read().await.clone())
 }
 
+/// Snapshot the live config into `backups/` before a destructive edit (PK apply).
+///
+/// Returns the written path so the UI can name the backup in its log line.
 #[tauri::command]
-fn copy_to_clipboard(text: String) -> Result<(), String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard.set_text(text).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn accept_match(state: State<'_, SharedLcu>) -> Result<(), String> {
-    state.accept_ready_check().await
+async fn backup_config_snapshot(
+    state: State<'_, SharedConfig>,
+    reason: String,
+    stamp: Option<String>,
+) -> Result<String, String> {
+    let json = {
+        let cfg = state.read().await;
+        serde_json::to_string_pretty(&*cfg).map_err(|e| e.to_string())?
+    };
+    // The frontend sends its local time; fall back to the UTC stamp if it is malformed.
+    let stamp = stamp
+        .filter(|s| config::is_backup_stamp(s))
+        .unwrap_or_else(config::backup_timestamp_now);
+    let path = config::write_config_backup(
+        &config::app_data_dir(),
+        &config::backup_account_prefix(None),
+        &stamp,
+        &reason,
+        &json,
+    )?;
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]
@@ -447,8 +459,7 @@ async fn apply_summoner_spells(
     {
         let mut tr = tracker.lock().await;
         tr.last_applied_spells = Some((tr.my_champ_id, spell1_id, spell2_id));
-        tr.bot_set_spells = Some((spell1_id, spell2_id));
-        tr.initial_client_spells = Some((spell1_id, spell2_id));
+        tr.record_bot_spells((spell1_id, spell2_id));
         // Lock in this choice so any in-flight WebSocket event never reverts it.
         tr.manual_spell_override = true;
     }
@@ -514,27 +525,30 @@ fn session_my_champ_id(session: &serde_json::Value) -> i32 {
 ///
 /// Sends one immediate swap attempt; if the server still holds the 3s bench lock
 /// it starts a bounded, strictly sequential retry loop (one HTTP request at a
-/// time, 120ms apart, hard wall-clock and attempt caps). The command itself
-/// always returns `Ok(())` so the UI never logs a spurious error while the
-/// retry loop is doing its job.
+/// time, `manual_snipe_interval_ms` apart, hard wall-clock and attempt caps). The
+/// command itself always returns `Ok(())` so the UI never logs a spurious error
+/// while the retry loop is doing its job.
 #[tauri::command]
 async fn swap_bench_champion(
     app: tauri::AppHandle,
     state: State<'_, SharedLcu>,
     tracker: State<'_, SharedTracker>,
+    config: State<'_, SharedConfig>,
     champion_id: i32,
 ) -> Result<(), String> {
     if champion_id <= 0 {
         return Err("無效的英雄 ID".to_string());
     }
+    let snipe_ms = config.read().await.manual_snipe_interval_ms;
 
     // One retry loop per target: a second click must not start a duplicate chain.
     let my_gen = {
         let mut tr = tracker.lock().await;
-        if tr.bench_retry_target == Some(champion_id) {
+        if tr.manual_snipe_target == Some(champion_id) || tr.bench_retry_target == Some(champion_id) {
             return Ok(());
         }
         tr.manual_snipe_generation = tr.manual_snipe_generation.wrapping_add(1);
+        tr.manual_snipe_target = Some(champion_id);
         tr.bench_retry_target = Some(champion_id);
         tr.bot_expected_champ = Some(champion_id);
         tr.manual_snipe_generation
@@ -546,8 +560,11 @@ async fn swap_bench_champion(
             let mut tr = tracker.lock().await;
             tr.last_bench_swap_time = Some(Instant::now());
             tr.bench_retry_target = None;
+            tr.manual_snipe_target = None;
             tr.manual_bench_hold = Some(champion_id);
-            tr.bot_expected_champ = Some(champion_id);
+            // Not "expected": the WS event for this swap must not read as a bot
+            // swap, which would clear the hold again.
+            tr.bot_expected_champ = None;
             tr.last_bench_verdict =
                 Some(format!("已手動換取英雄 (ID: {})，本局啟用手動保護", champion_id));
             emit_champ_select_state(&app, &tr);
@@ -574,8 +591,8 @@ async fn swap_bench_champion(
             "kind": "sys",
             "title": "手動搶角排程中",
             "reason": format!(
-                "英雄 (ID: {}) 尚在板凳鎖定期，已啟動安全連點（每次等回報後間隔 120ms，上限 3.2 秒）",
-                champion_id
+                "英雄 (ID: {}) 尚在板凳鎖定期，已啟動安全連點（每次等回報後間隔 {}ms，上限 3.2 秒）",
+                champion_id, snipe_ms
             ),
         }),
     );
@@ -587,15 +604,17 @@ async fn swap_bench_champion(
     tauri::async_runtime::spawn(async move {
         let started_at = Instant::now();
         let max_elapsed = std::time::Duration::from_millis(3200);
+        // Never exceed today's attempt rate: 24 attempts at the 120ms default.
+        let max_attempts: u32 = 3200_u64.div_ceil(snipe_ms).max(1) as u32;
         let mut attempts: u32 = 0;
         let mut polls: u32 = 0;
 
-        while started_at.elapsed() < max_elapsed && attempts < 24 {
+        while started_at.elapsed() < max_elapsed && attempts < max_attempts {
             // 1. Cheap in-memory guards: a newer snipe or a takeover ends this loop.
             {
                 let tr = tracker_retry.lock().await;
                 if tr.manual_snipe_generation != my_gen
-                    || tr.bench_retry_target != Some(champion_id)
+                    || tr.manual_snipe_target != Some(champion_id)
                 {
                     return;
                 }
@@ -606,6 +625,7 @@ async fn swap_bench_champion(
             if already_ours {
                 let mut tr = tracker_retry.lock().await;
                 tr.manual_bench_hold = Some(champion_id);
+                tr.manual_snipe_target = None;
                 tr.bench_retry_target = None;
                 emit_champ_select_state(&app_retry, &tr);
                 return;
@@ -613,7 +633,7 @@ async fn swap_bench_champion(
 
             // 3. Poll the session on the first and every 3rd attempt: verify the
             //    target still exists and wait out the server lock without POSTing.
-            if attempts % 3 == 0 {
+            if attempts.is_multiple_of(3) {
                 let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
                     // No longer in champ select.
                     break;
@@ -622,6 +642,7 @@ async fn swap_bench_champion(
                 if session_my_champ_id(&session) == champion_id {
                     let mut tr = tracker_retry.lock().await;
                     tr.manual_bench_hold = Some(champion_id);
+                    tr.manual_snipe_target = None;
                     tr.bench_retry_target = None;
                     emit_champ_select_state(&app_retry, &tr);
                     drop(tr);
@@ -685,8 +706,9 @@ async fn swap_bench_champion(
                 let mut tr = tracker_retry.lock().await;
                 tr.last_bench_swap_time = Some(Instant::now());
                 tr.bench_retry_target = None;
+                tr.manual_snipe_target = None;
                 tr.manual_bench_hold = Some(champion_id);
-                tr.bot_expected_champ = Some(champion_id);
+                tr.bot_expected_champ = None;
                 tr.last_bench_verdict =
                     Some(format!("已手動換取英雄 (ID: {})，本局啟用手動保護", champion_id));
                 emit_champ_select_state(&app_retry, &tr);
@@ -714,14 +736,20 @@ async fn swap_bench_champion(
             }
 
             attempts += 1;
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(snipe_ms)).await;
         }
 
         // Exhausted the caps without a swap: release the target and say why.
         let mut tr = tracker_retry.lock().await;
         if tr.manual_snipe_generation == my_gen {
-            tr.bench_retry_target = None;
-            tr.bot_expected_champ = None;
+            // Only release what this loop owns: an auto retry may own the target now.
+            tr.manual_snipe_target = None;
+            if tr.bench_retry_target == Some(champion_id) {
+                tr.bench_retry_target = None;
+            }
+            if tr.bot_expected_champ == Some(champion_id) {
+                tr.bot_expected_champ = None;
+            }
         }
         emit_champ_select_state(&app_retry, &tr);
         drop(tr);
@@ -767,27 +795,36 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn append_exec_log(time: String, kind: String, title: String, reason: String) {
+/// `exec-log.jsonl` rolls over to `exec-log.1.jsonl` past this size (one old file kept).
+const EXEC_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Append one line to `path`, first rotating it to `<stem>.1.jsonl` once it
+/// exceeds `max_bytes`, so the log never grows without bound.
+fn append_line_rotating(path: &std::path::Path, line: &str, max_bytes: u64) -> std::io::Result<()> {
     use std::io::Write;
-    let dir = std::env::var_os("APPDATA")
-        .map(|p| std::path::PathBuf::from(p).join("lol-aram-assistant"))
-        .unwrap_or_else(|| std::path::PathBuf::from("config"));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("exec-log.jsonl");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= max_bytes) {
+        let rotated = path.with_extension("1.jsonl");
+        let _ = std::fs::remove_file(&rotated);
+        std::fs::rename(path, &rotated)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
-    {
-        let line = serde_json::json!({
-            "time": time,
-            "kind": kind,
-            "title": title,
-            "reason": reason,
-        });
-        let _ = writeln!(f, "{}", line);
-    }
+        .open(path)?;
+    writeln!(f, "{}", line)
+}
+
+#[tauri::command]
+fn append_exec_log(time: String, kind: String, title: String, reason: String) {
+    let dir = config::app_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let line = serde_json::json!({
+        "time": time,
+        "kind": kind,
+        "title": title,
+        "reason": reason,
+    });
+    let _ = append_line_rotating(&dir.join("exec-log.jsonl"), &line.to_string(), EXEC_LOG_MAX_BYTES);
 }
 
 #[tauri::command]
@@ -805,7 +842,6 @@ fn build_tray(
     app: &mut tauri::App,
     initial_cfg: &AppConfig,
     config_lock: SharedConfig,
-    account_lock: SharedAccount,
 ) -> tauri::Result<()> {
     let status_lcu =
         MenuItem::with_id(app, "status_lcu", "LCU：等待客戶端...", false, None::<&str>)?;
@@ -905,14 +941,27 @@ fn build_tray(
             match id.as_str() {
                 "action_show" => show_main_window(app),
                 // Re-exec the current binary in place (tray stays, window restored).
-                "action_restart" => app.restart(),
+                "action_restart" => {
+                    // Start the replacement with the restart flag in its own
+                    // environment (it waits for our instance port instead of
+                    // waking us), then exit. If it cannot start, keep running.
+                    let spawned = std::env::current_exe().and_then(|exe| {
+                        std::process::Command::new(exe)
+                            .args(std::env::args_os().skip(1))
+                            .env(single_instance::RESTART_ENV, "1")
+                            .spawn()
+                    });
+                    match spawned {
+                        Ok(_) => app.exit(0),
+                        Err(err) => eprintln!("restart failed: {err}"),
+                    }
+                }
                 "action_quit" => app.exit(0),
                 toggle if toggle.starts_with("toggle_") => {
                     let app = app.clone();
                     let config_lock = Arc::clone(&config_lock);
-                    let account_lock = Arc::clone(&account_lock);
                     spawn(async move {
-                        handle_tray_toggle(&app, &config_lock, &account_lock, &id).await;
+                        handle_tray_toggle(&app, &config_lock, &id).await;
                     });
                 }
                 _ => {}
@@ -952,10 +1001,31 @@ fn build_tray(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Restore the last used account's settings before LCU connects; falls back
-    // to the legacy `config.json` on a fresh install.
-    let config_mgr = ConfigManager::for_account(None);
-    let initial_config = config_mgr.load();
+    // One instance per data directory: a second launch shows the first window and exits.
+    let instance = single_instance::acquire(&single_instance::ports_for(&config::app_data_dir()));
+    if matches!(instance, single_instance::Instance::AlreadyRunning) {
+        return;
+    }
+    // One-time: merge the per-account config files into `config.json` before
+    // anything loads, so the app starts on the user's real settings and rankings.
+    let migration = config::migrate_account_configs(&config::app_data_dir());
+    if migration.ran {
+        eprintln!(
+            "config migration: merged per-account files into config.json ({} ranking saves imported)",
+            migration.imported_saves
+        );
+    }
+    if let Some(error) = migration.error.as_deref() {
+        eprintln!("config migration: {error}");
+    }
+    let config_mgr = ConfigManager::new();
+    let (initial_config, initial_load_failed) = config_mgr.load_checked();
+    // Match the Run key to the restored setting: re-point it at this executable
+    // in case the install moved, or clear one left behind by another account.
+    // Defaults from an unreadable file must not delete the user's key.
+    if !initial_load_failed {
+        config::sync_windows_auto_start(initial_config.auto_start);
+    }
     let initial_config_for_tray = initial_config.clone();
     let shared_config: SharedConfig = Arc::new(RwLock::new(initial_config));
     let shared_account: SharedAccount = Arc::new(RwLock::new(None));
@@ -969,7 +1039,6 @@ pub fn run() {
     let config_for_status = Arc::clone(&shared_config);
     let config_for_alert = Arc::clone(&shared_config);
     let config_for_tray = Arc::clone(&shared_config);
-    let account_for_tray = Arc::clone(&shared_account);
     let account_for_status = Arc::clone(&shared_account);
     let account_for_worker = Arc::clone(&shared_account);
     let config_for_close = Arc::clone(&shared_config);
@@ -979,21 +1048,20 @@ pub fn run() {
     let live_poller_for_status = Arc::clone(&live_poller);
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(lcu_manager)
         .manage(shared_config)
         .manage(shared_account)
         .manage(live_poller)
         .setup(move |app| {
-            // Start watcher inside Tokio runtime context
-            lcu_for_watcher.start_watcher();
-
+            if let single_instance::Instance::Primary(listener, earlier) = instance {
+                let handle = app.handle().clone();
+                single_instance::serve(listener, earlier, move || show_main_window(&handle));
+            }
             // Tray icon, its menu, and the two-way config sync handlers.
             build_tray(
                 app,
                 &initial_config_for_tray,
                 Arc::clone(&config_for_tray),
-                Arc::clone(&account_for_tray),
             )?;
 
             // `--minimized` (used by the Windows Run key) starts hidden in the tray.
@@ -1028,6 +1096,9 @@ pub fn run() {
             let mut status_rx = lcu_for_events.subscribe_status();
             let mut event_rx = lcu_for_events.subscribe_events();
             let mut alert_rx = live_poller_for_events.subscribe_alerts();
+            // Start the watcher only now: a client already running at launch is
+            // reported once, and a broadcast with no receiver yet would be lost.
+            lcu_for_watcher.start_watcher();
             let tracker = Arc::new(tokio::sync::Mutex::new(ChampSelectSessionTracker::default()));
             // Shared with the `swap_bench_champion` / `get_champ_select_ui_state` commands.
             app.manage(Arc::clone(&tracker));
@@ -1047,14 +1118,15 @@ pub fn run() {
                     let _ = app_h1.emit("lcu-status", &status);
 
                     if status.connected {
-                        // Swap config files when the logged-in account changed.
-                        sync_account_config(
-                            &app_h1,
-                            &lcu_for_status,
-                            &config_for_status,
-                            &account_for_status,
-                        )
-                        .await;
+                        // Show which account is logged in (the config is shared).
+                        if !sync_active_account(&app_h1, &lcu_for_status, &account_for_status).await
+                        {
+                            retry_account_sync(
+                                app_h1.clone(),
+                                Arc::clone(&lcu_for_status),
+                                Arc::clone(&account_for_status),
+                            );
+                        }
 
                         let phase = lcu_for_status.fetch_gameflow_phase().await;
                         let queue_id = lcu_for_status.fetch_current_queue_id().await;
@@ -1171,13 +1243,8 @@ pub fn run() {
                     } else if event.uri == "/lol-summoner/v1/current-summoner" {
                         // Account login / switch without an LCU reconnect (watcher
                         // sees no port/token change, so no status event fires).
-                        sync_account_config(
-                            &app_h2,
-                            &lcu_for_worker,
-                            &config_for_worker,
-                            &account_for_worker,
-                        )
-                        .await;
+                        let _ = sync_active_account(&app_h2, &lcu_for_worker, &account_for_worker)
+                            .await;
                     } else if event.uri == "/lol-gameflow/v1/gameflow-phase" {
                         let phase = event.data.as_str().unwrap_or("");
                         if phase == "None" || phase == "Lobby" {
@@ -1223,8 +1290,7 @@ pub fn run() {
             get_app_config,
             save_app_config,
             get_active_account,
-            copy_to_clipboard,
-            accept_match,
+            backup_config_snapshot,
             swap_bench_champion,
             accept_trade_request,
             decline_trade_request,
@@ -1248,7 +1314,7 @@ async fn start_ff_poller(lcu: &SharedLcu, poller: &Arc<LiveGamePoller>, cfg: &Ap
     if !is_mayhem_queue(queue_id) && !is_aram_queue(queue_id) {
         return;
     }
-    let seconds = parse_ff_time(&cfg.ff_time_aram);
+    let seconds = (parse_ff_time(&cfg.ff_time_aram) - cfg.ff_lead_sec).max(0.0);
     Arc::clone(poller).start_polling(seconds, cfg.ff_cooldown_reminder);
 }
 
@@ -1458,6 +1524,14 @@ fn parse_ff_time(raw: &str) -> f64 {
     }
 }
 
+/// Milliseconds since the Unix epoch, or `0` if the system clock is before it.
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Remaining seconds in the current champ-select phase.
 ///
 /// `adjustedTimeLeftInPhase` is a snapshot taken at `internalNowInEpochMs`, so the
@@ -1478,11 +1552,7 @@ fn remaining_phase_secs(data: &serde_json::Value) -> Option<i32> {
 
     let mut left_ms = adjusted_ms;
     if let Some(snapshot_ms) = timer.get("internalNowInEpochMs").and_then(|v| v.as_i64()) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(snapshot_ms);
-        let elapsed_ms = now_ms - snapshot_ms;
+        let elapsed_ms = now_epoch_ms() - snapshot_ms;
         if elapsed_ms > 0 {
             left_ms = (adjusted_ms - elapsed_ms).max(0);
         }
@@ -1513,11 +1583,7 @@ fn phase_elapsed_ms(data: &serde_json::Value) -> Option<i64> {
 
     let mut left_ms = adjusted_ms;
     if let Some(snapshot_ms) = timer.get("internalNowInEpochMs").and_then(|v| v.as_i64()) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(snapshot_ms);
-        let elapsed_ms = now_ms - snapshot_ms;
+        let elapsed_ms = now_epoch_ms() - snapshot_ms;
         if elapsed_ms > 0 {
             left_ms = (adjusted_ms - elapsed_ms).max(0);
         }
@@ -1643,22 +1709,7 @@ async fn handle_champ_select_event(
 
     // Detect manual champion change: the player picked a champion themselves.
     // If the change matches what the bot was trying to acquire, it is a bot swap, not a manual pick.
-    if old_champ_id != 0 && my_champ_id != 0 && my_champ_id != old_champ_id {
-        // The bot marks the champion it is acquiring before sending the request, so we can
-        // tell a bot-initiated swap apart from a manual pick no matter which arrives first.
-        let bot_initiated = tr.bot_expected_champ == Some(my_champ_id)
-            || tr.bench_retry_target == Some(my_champ_id);
-        if bot_initiated {
-            tr.bot_expected_champ = None;
-            tr.manual_bench_hold = None;
-            tr.bench_retry_target = None;
-        } else {
-            // The player manually chose a different champion: respect it and stop auto-swapping.
-            tr.manual_bench_hold = Some(my_champ_id);
-            tr.bench_retry_target = None;
-            tr.bot_expected_champ = None;
-        }
-    }
+    tr.observe_champion_change(old_champ_id, my_champ_id);
 
     // Resolve the queue id so ARAM (450) and Mayhem (2400) use their own profile/settings,
     // and non-ARAM modes (Practice Tool, Summoner's Rift, TFT, Arena) are strictly excluded!
@@ -1722,8 +1773,7 @@ async fn handle_champ_select_event(
         );
         if tr.last_applied_spells != Some((my_champ_id, spell1_id, spell2_id)) {
             tr.last_applied_spells = Some((my_champ_id, spell1_id, spell2_id));
-            tr.bot_set_spells = Some((spell1_id, spell2_id));
-            tr.initial_client_spells = Some((spell1_id, spell2_id));
+            tr.record_bot_spells((spell1_id, spell2_id));
 
             // Skip the PATCH when the client already shows exactly these spells.
             let already_set = current_client_spells == Some((spell1_id, spell2_id));
@@ -1800,10 +1850,11 @@ async fn handle_champ_select_event(
             .map(lcu::parse_subset_champion_list)
             .unwrap_or_default();
 
-        if candidate_cards.is_empty() && pending_action_id.is_some() {
-            if let Ok(fetched) = lcu.fetch_subset_champion_list().await {
-                candidate_cards = fetched;
-            }
+        if candidate_cards.is_empty()
+            && pending_action_id.is_some()
+            && let Ok(fetched) = lcu.fetch_subset_champion_list().await
+        {
+            candidate_cards = fetched;
         }
         if !candidate_cards.is_empty() {
             tr.our_offer_cards = candidate_cards.clone();
@@ -1915,7 +1966,8 @@ async fn handle_champ_select_event(
         .get("benchEnabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if bench_enabled && my_champ_id > 0 {
+    // A manual overview snipe owns the bench until it lands or gives up.
+    if bench_enabled && my_champ_id > 0 && tr.manual_snipe_target.is_none() {
         let now = Instant::now();
         let cooldown_ok = tr
             .last_bench_swap_time
@@ -2003,6 +2055,10 @@ async fn handle_champ_select_event(
                                 let app_retry = app_handle.clone();
                                 let reason_retry = reason.clone();
                                 let stop_sec = settings.stop_bench_remaining_sec;
+                                let bench_retry_ms = config.bench_retry_interval_ms;
+                                // Keep the same ~3.6s retry window whatever the interval is.
+                                let max_attempts: u32 = 3600_u64.div_ceil(bench_retry_ms)
+                                    .max(1) as u32;
 
                                 tauri::async_runtime::spawn(async move {
                                     // Riot's champ select rules (25.13+ champion cards):
@@ -2036,7 +2092,7 @@ async fn handle_champ_select_event(
 
                                         // Only fetch the full session while waiting for the phase lock
                                         // or every 5th burst attempt so GET latency never slows down the POST burst.
-                                        if post_attempts == 0 || post_attempts % 5 == 0 {
+                                        if post_attempts == 0 || post_attempts.is_multiple_of(5) {
                                             let Ok(session) =
                                                 lcu_retry.fetch_champ_select_session().await
                                             else {
@@ -2103,8 +2159,9 @@ async fn handle_champ_select_event(
                                             }
                                         }
 
-                                        // Unlocked (or in a 3s mid-phase swap cooldown): burst every 80ms
-                                        // for up to 45 attempts (~3.6s) to cover a full 3s bench lock.
+                                        // Unlocked (or in a 3s mid-phase swap cooldown): burst every
+                                        // `bench_retry_ms` for up to ~3.6s of attempts to cover a full
+                                        // 3s bench lock.
                                         {
                                             let mut tr_lock = tracker_retry.lock().await;
                                             tr_lock.bot_expected_champ = Some(target_champ_id);
@@ -2135,11 +2192,13 @@ async fn handle_champ_select_event(
                                             }
                                         }
                                         post_attempts += 1;
-                                        if post_attempts >= 45 {
+                                        if post_attempts >= max_attempts {
                                             break;
                                         }
-                                        tokio::time::sleep(std::time::Duration::from_millis(80))
-                                            .await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(
+                                            bench_retry_ms,
+                                        ))
+                                        .await;
                                     }
 
                                     let mut tr_lock = tracker_retry.lock().await;
@@ -2280,6 +2339,15 @@ async fn handle_champ_select_event(
                         } => {
                             tr.processed_trade_ids.insert(trade_id);
                             tr.last_trade_verdict = Some(format!("自動同意換角：{}", reason));
+                            // The resulting champion change is the bot's, not a manual pick.
+                            tr.bot_expected_champ = Some(teammate_champ_id);
+                            // The tracker stays locked while the LCU confirms: bench
+                            // retries and manual grabs share the single bot_expected_champ
+                            // slot and must not overwrite it mid-swap. Usually one session
+                            // fetch; ~2s when a route answers but never confirms; longer
+                            // only if the LCU itself stalls (5s HTTP timeout per request).
+                            // WS events are handled one at a time, so the swap's champion
+                            // change is classified after this.
                             match lcu.accept_trade(trade_id).await {
                                 Ok(()) => {
                                     if config.chat_on_accept_teammate {
@@ -2296,6 +2364,11 @@ async fn handle_champ_select_event(
                                     );
                                 }
                                 Err(e) => {
+                                    // Unconfirmed is not failed: the swap may still land,
+                                    // and its champion change must not look manual.
+                                    if e != lcu::TRADE_UNCONFIRMED {
+                                        tr.bot_expected_champ = None;
+                                    }
                                     let _ = app_handle.emit(
                                         "lcu-log",
                                         serde_json::json!({
@@ -2387,11 +2460,7 @@ async fn handle_champ_select_event(
             && config.auto_chat_on_swap
             && !config.chat_messages.is_empty()
         {
-            let msg_index = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as usize)
-                .unwrap_or(0)
-                % config.chat_messages.len();
+            let msg_index = now_epoch_ms() as usize % config.chat_messages.len();
             let msg_template = &config.chat_messages[msg_index];
             let old_name = profile
                 .iter()
@@ -2457,16 +2526,49 @@ async fn handle_champ_select_event(
 mod tests {
     use super::{
         champ_select_phase, is_card_pick_still_pending, manual_bench_lock_remaining,
-        parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
+        now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs,
+        session_my_champ_id, append_line_rotating, SaveConfigError,
     };
+    use crate::config;
     use serde_json::json;
 
     #[test]
+    fn test_save_config_error_serializes_kind_and_message() {
+        let refused = serde_json::to_value(SaveConfigError::LoadRefused {
+            message: config::LOAD_FAILED_SAVE_REFUSED.to_string(),
+        })
+        .unwrap();
+        assert_eq!(refused["kind"], "loadRefused");
+        assert_eq!(refused["message"], config::LOAD_FAILED_SAVE_REFUSED);
+
+        let failed = serde_json::to_value(SaveConfigError::WriteFailed {
+            message: "access denied".to_string(),
+        })
+        .unwrap();
+        assert_eq!(failed["kind"], "writeFailed");
+        assert_eq!(failed["message"], "access denied");
+    }
+
+    #[test]
+    fn test_exec_log_rotates_past_size_limit() {
+        let dir = std::env::temp_dir().join(format!("lolafk-execlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("exec-log.jsonl");
+        append_line_rotating(&path, "aaaaaaaaaa", 16).unwrap();
+        append_line_rotating(&path, "bbbbbbbbbb", 16).unwrap();
+        // 22 bytes now >= 16: the next append rotates first.
+        append_line_rotating(&path, "cccccccccc", 16).unwrap();
+        let rotated = std::fs::read_to_string(dir.join("exec-log.1.jsonl")).unwrap();
+        let current = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(rotated.lines().collect::<Vec<_>>(), vec!["aaaaaaaaaa", "bbbbbbbbbb"]);
+        assert_eq!(current.lines().collect::<Vec<_>>(), vec!["cccccccccc"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_phase_elapsed_ms_counts_from_phase_start() {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let now_ms = now_epoch_ms();
         // 45s phase, 40s remaining => 5s elapsed
         let data = json!({
             "timer": {
@@ -2504,10 +2606,7 @@ mod tests {
 
     #[test]
     fn test_remaining_phase_secs_subtracts_elapsed_time() {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let now_ms = now_epoch_ms();
         let data = json!({
             "timer": {
                 "adjustedTimeLeftInPhase": 35000,
@@ -2581,10 +2680,7 @@ mod tests {
 
     #[test]
     fn test_manual_bench_lock_remaining_counts_down_to_unlock() {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+        let now_ms = now_epoch_ms();
 
         // 45s FINALIZATION phase, 43s left => 2s elapsed => ~0.85s of lock left.
         let session = json!({

@@ -4,7 +4,6 @@ use futures_util::{SinkExt, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -13,6 +12,104 @@ use tokio::sync::{RwLock, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+/// `accept_trade` error when the LCU took the request but the session never
+/// showed the swap resolved: it may still land, so it is not a plain failure.
+pub const TRADE_UNCONFIRMED: &str = "LCU 未確認換角已完成";
+
+/// What every LCU call answers when no client is connected.
+const NOT_CONNECTED: &str = "LCU not connected";
+
+/// What one swap-accept route answered.
+#[derive(Debug, Clone, Copy)]
+enum RouteReply {
+    /// Accepted and the session shows the swap resolved.
+    Resolved,
+    /// Accepted (2xx) but the session never showed it resolved.
+    Unconfirmed,
+    /// HTTP error status.
+    Status(u16),
+}
+
+/// Folds the replies of the accept routes, tried in order, into one result.
+#[derive(Default)]
+struct AcceptRoutes {
+    unconfirmed: bool,
+    last_status: Option<u16>,
+}
+
+impl AcceptRoutes {
+    /// `Some` once the outcome is final; `None` to try the next route.
+    fn record(&mut self, reply: RouteReply) -> Option<Result<(), String>> {
+        match reply {
+            RouteReply::Resolved => Some(Ok(())),
+            RouteReply::Unconfirmed => {
+                self.unconfirmed = true;
+                None
+            }
+            RouteReply::Status(code) => {
+                self.last_status = Some(code);
+                // 404: this route does not exist on this client build. After an
+                // unconfirmed accept, keep going: that one is the real answer.
+                if code != 404 && !self.unconfirmed {
+                    Some(Err(format!("HTTP error {code}")))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn finish(self) -> Result<(), String> {
+        // A later route's error must not hide that an earlier one took the request.
+        if self.unconfirmed {
+            return Err(TRADE_UNCONFIRMED.to_string());
+        }
+        match self.last_status {
+            Some(code) => Err(format!("HTTP error {code}")),
+            None => Err("champion-swaps accept endpoint unavailable".to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_routes_tests {
+    use super::*;
+
+    fn run(replies: &[RouteReply]) -> Result<(), String> {
+        let mut outcome = AcceptRoutes::default();
+        for &reply in replies {
+            if let Some(done) = outcome.record(reply) {
+                return done;
+            }
+        }
+        outcome.finish()
+    }
+
+    #[test]
+    fn test_unconfirmed_accept_is_not_hidden_by_a_later_404() {
+        let result = run(&[RouteReply::Unconfirmed, RouteReply::Status(404)]);
+        assert_eq!(result, Err(TRADE_UNCONFIRMED.to_string()));
+    }
+
+    #[test]
+    fn test_unconfirmed_then_resolved_on_the_legacy_route_succeeds() {
+        assert_eq!(run(&[RouteReply::Unconfirmed, RouteReply::Resolved]), Ok(()));
+    }
+
+    #[test]
+    fn test_missing_route_falls_through_and_real_errors_stop() {
+        assert_eq!(run(&[RouteReply::Status(404), RouteReply::Resolved]), Ok(()));
+        assert_eq!(
+            run(&[RouteReply::Status(500), RouteReply::Resolved]),
+            Err("HTTP error 500".to_string())
+        );
+        assert_eq!(
+            run(&[RouteReply::Status(404), RouteReply::Status(404)]),
+            Err("HTTP error 404".to_string())
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LcuAuth {
@@ -335,6 +432,50 @@ pub fn resolve_queue_id_from_session_or_lobby(
     None
 }
 
+/// Whether trade `trade_id` is still waiting for an answer in a champ select session.
+///
+/// `AVAILABLE` means the slot is idle and a new swap can be offered (where a
+/// finished trade usually returns to), so it does not count as pending.
+pub fn trade_still_pending(session: &serde_json::Value, trade_id: i64) -> bool {
+    session
+        .get("trades")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|t| {
+                t.get("id").and_then(|v| v.as_i64()) == Some(trade_id)
+                    && matches!(
+                        t.get("state").and_then(|v| v.as_str()).unwrap_or(""),
+                        "RECEIVED" | "SENT" | "PENDING"
+                    )
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Whether `/lol-lobby/v2/lobby` describes a custom-game lobby.
+///
+/// The dev test button may only press "search" in a custom lobby; in a normal
+/// lobby that would queue the player (and any party) into a real match.
+pub fn lobby_is_custom(lobby: &serde_json::Value) -> bool {
+    lobby
+        .get("gameConfig")
+        .and_then(|c| c.get("isCustom"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Whether `/lol-gameflow/v1/session` belongs to a custom game.
+///
+/// Quitting champ select outside a custom game is a dodge (queue lockout and
+/// LP loss), so the dev quit button refuses unless this is true.
+pub fn gameflow_is_custom(session: &serde_json::Value) -> bool {
+    session
+        .get("gameData")
+        .and_then(|g| g.get("isCustomGame"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 fn classify_queue_info(
     qid: Option<i64>,
     game_mode: &str,
@@ -418,17 +559,95 @@ impl LcuManager {
         self.auth.read().await.is_some()
     }
 
+    /// An authorized request to the local LCU API; `None` without a connection.
+    async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Option<reqwest::RequestBuilder> {
+        let auth = self.auth.read().await.clone()?;
+        let url = format!("https://127.0.0.1:{}{}", auth.port, path);
+        let mut req = self
+            .http_client
+            .request(method, url)
+            .header("Authorization", &auth.auth_header);
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        Some(req)
+    }
+
+    /// `request` + send: a missing connection or a transport failure is the error.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response, String> {
+        let req = self.request(method, path, body).await.ok_or(NOT_CONNECTED)?;
+        req.send().await.map_err(|e| e.to_string())
+    }
+
+    /// `send` + non-2xx -> `HTTP error <status>`; the body is left to the caller.
+    async fn send_ok(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<reqwest::Response, String> {
+        let res = self.send(method, path, body).await?;
+        if !res.status().is_success() {
+            return Err(format!("HTTP error {}", res.status()));
+        }
+        Ok(res)
+    }
+
+    /// `send_ok` for calls whose response body is ignored.
+    async fn send_unit(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        self.send_ok(method, path, body).await.map(|_| ())
+    }
+
+    /// GET `path` and parse a successful JSON body.
+    async fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
+        let res = self.send_ok(reqwest::Method::GET, path, None).await?;
+        res.json().await.map_err(|e| e.to_string())
+    }
+
+    /// `get_json` for callers that only care whether the snapshot is usable.
+    async fn get_json_opt(&self, path: &str) -> Option<serde_json::Value> {
+        let res = self.request(reqwest::Method::GET, path, None).await?;
+        let res = res.send().await.ok()?;
+        if !res.status().is_success() {
+            return None;
+        }
+        res.json().await.ok()
+    }
+
+    /// Fail up front where a `None` snapshot would otherwise hide the missing client.
+    async fn ensure_connected(&self) -> Result<(), String> {
+        if self.auth.read().await.is_none() {
+            return Err(NOT_CONNECTED.to_string());
+        }
+        Ok(())
+    }
+
     /// Detect LCU credentials from process cmdline or lockfile
     pub fn detect_auth() -> Option<LcuAuth> {
         // Method 1: Process inspection (fastest, works anywhere)
-        let mut sys = System::new_with_specifics(RefreshKind::nothing().with_processes(
-            ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
-        ));
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
-        );
+        // The exe path stays readable for an elevated client even when its
+        // command line is not, and it points at the lockfile of any install path.
+        let refresh = ProcessRefreshKind::nothing()
+            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
+        let mut sys =
+            System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
 
         let port_re = Regex::new(r"--app-port=(\d+)").unwrap();
         let token_re = Regex::new(r"--remoting-auth-token=([\w-]+)").unwrap();
@@ -461,24 +680,33 @@ impl LcuManager {
             }
         }
 
-        // Method 2: Fallback to common lockfile paths.
+        // Method 2: the lockfile next to a running client, then common install paths.
         // A lockfile survives a crash, so its PID must be proven alive first.
-        let has_lcu_process = sys.processes().values().any(|p| {
-            let name = p.name().to_string_lossy();
-            name.eq_ignore_ascii_case("LeagueClient.exe")
-                || name.eq_ignore_ascii_case("LeagueClientUx.exe")
-        });
-
-        let candidates = [
+        let mut candidates: Vec<std::path::PathBuf> = sys
+            .processes()
+            .values()
+            .filter(|p| {
+                let name = p.name().to_string_lossy();
+                name.eq_ignore_ascii_case("LeagueClient.exe")
+                    || name.eq_ignore_ascii_case("LeagueClientUx.exe")
+            })
+            .filter_map(|p| p.exe().and_then(|exe| exe.parent()).map(|dir| dir.join("lockfile")))
+            .collect();
+        for path in [
             r"C:\Riot Games\League of Legends\lockfile",
             r"D:\Riot Games\League of Legends\lockfile",
             r"E:\Riot Games\League of Legends\lockfile",
             r"D:\League of Legends\lockfile",
             r"E:\League of Legends\lockfile",
-        ];
+        ] {
+            let path = std::path::PathBuf::from(path);
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
 
         for path in &candidates {
-            if let Ok(content) = fs::read_to_string(Path::new(path)) {
+            if let Ok(content) = fs::read_to_string(path) {
                 let parts: Vec<&str> = content.split(':').collect();
                 if parts.len() >= 5 {
                     let pid_alive = parts[1]
@@ -486,7 +714,7 @@ impl LcuManager {
                         .parse::<u32>()
                         .map(|pid| sys.processes().contains_key(&sysinfo::Pid::from_u32(pid)))
                         .unwrap_or(false);
-                    if !has_lcu_process && !pid_alive {
+                    if !pid_alive {
                         continue;
                     }
                     if let Ok(port) = parts[2].parse::<u16>() {
@@ -508,24 +736,8 @@ impl LcuManager {
 
     /// Fetch all champion summaries in Traditional Chinese from local LCU assets
     pub async fn fetch_champions(&self) -> Result<Vec<ChampionItem>, String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-game-data/assets/v1/champion-summary.json",
-            auth.port
-        );
-
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-
+        let path = "/lol-game-data/assets/v1/champion-summary.json";
+        let res = self.send_ok(reqwest::Method::GET, path, None).await?;
         let raw: Vec<serde_json::Value> = res.json().await.map_err(|e| e.to_string())?;
         let mut list = Vec::new();
 
@@ -563,163 +775,71 @@ impl LcuManager {
 
     /// Accept ready check
     pub async fn accept_ready_check(&self) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-matchmaking/v1/ready-check/accept",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .post(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        Ok(())
+        let path = "/lol-matchmaking/v1/ready-check/accept";
+        self.send_unit(reqwest::Method::POST, path, None).await
     }
 
     /// Swap with champion on ARAM bench
     pub async fn swap_bench(&self, champion_id: i32) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-champ-select/v1/session/bench/swap/{}",
-            auth.port, champion_id
-        );
-        let res = self
-            .http_client
-            .post(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let path = format!("/lol-champ-select/v1/session/bench/swap/{}", champion_id);
+        let res = self.send(reqwest::Method::POST, &path, None).await?;
         if res.status().is_success() {
             return Ok(());
         }
         if res.status() == reqwest::StatusCode::NOT_FOUND {
-            let fallback_url = format!(
-                "https://127.0.0.1:{}/lol-lobby-team-builder/champ-select/v1/session/bench/swap/{}",
-                auth.port, champion_id
+            let fallback = format!(
+                "/lol-lobby-team-builder/champ-select/v1/session/bench/swap/{}",
+                champion_id
             );
-            let fb_res = self
-                .http_client
-                .post(&fallback_url)
-                .header("Authorization", &auth.auth_header)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if fb_res.status().is_success() {
-                return Ok(());
-            }
-            return Err(format!("HTTP error {}", fb_res.status()));
+            return self.send_unit(reqwest::Method::POST, &fallback, None).await;
         }
         Err(format!("HTTP error {}", res.status()))
     }
 
     /// Set our summoner spells (`spell1Id` = D, `spell2Id` = F) during champion select.
     pub async fn set_summoner_spells(&self, spell1_id: i32, spell2_id: i32) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-champ-select/v1/session/my-selection",
-            auth.port
-        );
+        let path = "/lol-champ-select/v1/session/my-selection";
         let payload = serde_json::json!({
             "spell1Id": spell1_id,
             "spell2Id": spell2_id
         });
         let res = self
-            .http_client
-            .patch(&url)
-            .header("Authorization", &auth.auth_header)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+            .send(reqwest::Method::PATCH, path, Some(&payload))
+            .await?;
         if res.status().is_success() {
             return Ok(());
         }
         if res.status() == reqwest::StatusCode::NOT_FOUND {
-            let fallback_url = format!(
-                "https://127.0.0.1:{}/lol-lobby-team-builder/champ-select/v1/session/my-selection",
-                auth.port
-            );
-            let fb_res = self
-                .http_client
-                .patch(&fallback_url)
-                .header("Authorization", &auth.auth_header)
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if fb_res.status().is_success() {
-                return Ok(());
-            }
-            return Err(format!("HTTP error {}", fb_res.status()));
+            let fallback = "/lol-lobby-team-builder/champ-select/v1/session/my-selection";
+            return self
+                .send_unit(reqwest::Method::PATCH, fallback, Some(&payload))
+                .await;
         }
         Err(format!("HTTP error {}", res.status()))
     }
 
     /// Fetch the local player's champion mastery list sorted by mastery points descending.
     pub async fn fetch_champion_mastery(&self) -> Result<Vec<ChampionMasteryItem>, String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let primary_url = format!(
-            "https://127.0.0.1:{}/lol-champion-mastery/v1/local-player/champion-mastery",
-            auth.port
-        );
-
-        match self
-            .http_client
-            .get(&primary_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        {
-            Ok(res) if res.status().is_success() => {
-                if let Ok(raw) = res.json::<serde_json::Value>().await {
-                    return Ok(parse_mastery_items(&raw));
-                }
-            }
-            _ => {}
+        self.ensure_connected().await?;
+        let primary = "/lol-champion-mastery/v1/local-player/champion-mastery";
+        if let Some(raw) = self.get_json_opt(primary).await {
+            return Ok(parse_mastery_items(&raw));
         }
 
         // Fallback via current-summoner -> collections champion-mastery (for older client builds)
-        let summoner_url = format!(
-            "https://127.0.0.1:{}/lol-summoner/v1/current-summoner",
-            auth.port
-        );
-        let Ok(summoner_res) = self
-            .http_client
-            .get(&summoner_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        else {
+        let summoner_path = "/lol-summoner/v1/current-summoner";
+        let Some(summoner_json) = self.get_json_opt(summoner_path).await else {
             return Ok(Vec::new());
-        };
-        if !summoner_res.status().is_success() {
-            return Ok(Vec::new());
-        }
-        let summoner_json: serde_json::Value = match summoner_res.json().await {
-            Ok(v) => v,
-            Err(_) => return Ok(Vec::new()),
         };
         let Some(summoner_id) = summoner_json.get("summonerId").and_then(|v| v.as_i64()) else {
             return Ok(Vec::new());
         };
 
-        let fallback_url = format!(
-            "https://127.0.0.1:{}/lol-collections/v1/inventories/{}/champion-mastery",
-            auth.port, summoner_id
+        let fallback = format!(
+            "/lol-collections/v1/inventories/{}/champion-mastery",
+            summoner_id
         );
-        let fb_res = self
-            .http_client
-            .get(&fallback_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let fb_res = self.send(reqwest::Method::GET, &fallback, None).await?;
         if !fb_res.status().is_success() {
             return Ok(Vec::new());
         }
@@ -729,62 +849,18 @@ impl LcuManager {
 
     /// Fetch the logged-in account (`GET /lol-summoner/v1/current-summoner`).
     pub async fn fetch_current_summoner(&self) -> Option<serde_json::Value> {
-        let auth = self.auth.read().await.clone()?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-summoner/v1/current-summoner",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .ok()?;
-        if !res.status().is_success() {
-            return None;
-        }
-        res.json().await.ok()
+        self.get_json_opt("/lol-summoner/v1/current-summoner").await
     }
 
     /// Fetch the current ReadyCheck state (`GET /lol-matchmaking/v1/ready-check`).
     pub async fn fetch_ready_check(&self) -> Option<serde_json::Value> {
-        let auth = self.auth.read().await.clone()?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-matchmaking/v1/ready-check",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .ok()?;
-        if !res.status().is_success() {
-            return None;
-        }
-        res.json().await.ok()
+        self.get_json_opt("/lol-matchmaking/v1/ready-check").await
     }
 
     /// Fetch the 2~3 offered ARAM / Mayhem champion cards (`GET /lol-lobby-team-builder/champ-select/v1/subset-champion-list`).
     pub async fn fetch_subset_champion_list(&self) -> Result<Vec<i32>, String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-lobby-team-builder/champ-select/v1/subset-champion-list",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        let raw: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+        let path = "/lol-lobby-team-builder/champ-select/v1/subset-champion-list";
+        let raw = self.get_json(path).await?;
         Ok(parse_subset_champion_list(&raw))
     }
 
@@ -795,34 +871,8 @@ impl LcuManager {
         std::collections::HashSet<String>,
         std::collections::HashSet<i64>,
     ) {
-        let Some(auth) = self.auth.read().await.clone() else {
-            return Default::default();
-        };
-
-        let lobby_url = format!("https://127.0.0.1:{}/lol-lobby/v2/lobby", auth.port);
-        let friends_url = format!("https://127.0.0.1:{}/lol-chat/v1/friends", auth.port);
-
-        let lobby_val = match self
-            .http_client
-            .get(&lobby_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
-            _ => None,
-        };
-
-        let friends_val = match self
-            .http_client
-            .get(&friends_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
-            _ => None,
-        };
+        let lobby_val = self.get_json_opt("/lol-lobby/v2/lobby").await;
+        let friends_val = self.get_json_opt("/lol-chat/v1/friends").await;
 
         extract_allied_identifiers(lobby_val.as_ref(), friends_val.as_ref())
     }
@@ -833,105 +883,37 @@ impl LcuManager {
         action_id: i64,
         champion_id: i32,
     ) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-champ-select/v1/session/actions/{}",
-            auth.port, action_id
-        );
+        let path = format!("/lol-champ-select/v1/session/actions/{}", action_id);
         let payload = serde_json::json!({
             "championId": champion_id,
             "completed": true
         });
 
-        let res = self
-            .http_client
-            .patch(&url)
-            .header("Authorization", &auth.auth_header)
-            .json(&payload)
-            .send()
+        self.send_unit(reqwest::Method::PATCH, &path, Some(&payload))
             .await
-            .map_err(|e| e.to_string())?;
-
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        Ok(())
     }
 
     /// Resolve the queue id of the ongoing gameflow session or lobby (450 = ARAM, 2400/3270 = Mayhem, -1 = non-ARAM custom/Practice Tool)
     pub async fn fetch_current_queue_id(&self) -> Option<i32> {
-        let auth = self.auth.read().await.clone()?;
-        let url = format!("https://127.0.0.1:{}/lol-gameflow/v1/session", auth.port);
-
-        let session_val = match self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        {
-            Ok(res) if res.status().is_success() => res.json::<serde_json::Value>().await.ok(),
-            _ => None,
-        };
+        let session_val = self.get_json_opt("/lol-gameflow/v1/session").await;
         if let Some(qid) = resolve_queue_id_from_session_or_lobby(session_val.as_ref(), None) {
             return Some(qid);
         }
 
         // Fallback to `/lol-lobby/v2/lobby` when sitting in Lobby / Matchmaking / ReadyCheck
-        let lobby_url = format!("https://127.0.0.1:{}/lol-lobby/v2/lobby", auth.port);
-        let lobby_val = match self
-            .http_client
-            .get(&lobby_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-        {
-            Ok(res) if res.status().is_success() => res.json::<serde_json::Value>().await.ok(),
-            _ => None,
-        };
+        let lobby_val = self.get_json_opt("/lol-lobby/v2/lobby").await;
         resolve_queue_id_from_session_or_lobby(None, lobby_val.as_ref())
     }
 
     /// Fetch the live champ-select session snapshot
     pub async fn fetch_champ_select_session(&self) -> Result<serde_json::Value, String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-champ-select/v1/session",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        res.json().await.map_err(|e| e.to_string())
+        self.get_json("/lol-champ-select/v1/session").await
     }
 
     /// Fetch the current gameflow phase (e.g. "ChampSelect", "InProgress")
     pub async fn fetch_gameflow_phase(&self) -> Option<String> {
-        let auth = self.auth.read().await.clone()?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-gameflow/v1/gameflow-phase",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .get(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .ok()?;
-        if !res.status().is_success() {
-            return None;
-        }
-        res.json::<serde_json::Value>()
-            .await
-            .ok()?
+        self.get_json_opt("/lol-gameflow/v1/gameflow-phase")
+            .await?
             .as_str()
             .map(|s| s.to_string())
     }
@@ -942,82 +924,58 @@ impl LcuManager {
     /// exists and the live route is `session/champion-swaps/{id}`. Both the new
     /// lobby-team-builder route and the legacy one are tried.
     pub async fn accept_trade(&self, trade_id: i64) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let mut last_error = String::from("champion-swaps accept endpoint unavailable");
+        let mut outcome = AcceptRoutes::default();
         for base in [
             "/lol-lobby-team-builder/champ-select/v1/session/champion-swaps",
             "/lol-champ-select/v1/session/champion-swaps",
         ] {
-            let url = format!(
-                "https://127.0.0.1:{}{}/{}/accept",
-                auth.port, base, trade_id
-            );
-            let res = self
-                .http_client
-                .post(&url)
-                .header("Authorization", &auth.auth_header)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if res.status().is_success() {
+            let path = format!("{}/{}/accept", base, trade_id);
+            let res = self.send(reqwest::Method::POST, &path, None).await?;
+            let reply = if res.status().is_success() {
                 // The endpoint answers 204 even for an unknown swap id, so confirm the
                 // swap really left the pending list before reporting success.
                 if self.swap_resolved(trade_id).await {
-                    return Ok(());
+                    RouteReply::Resolved
+                } else {
+                    RouteReply::Unconfirmed
                 }
-                last_error = "LCU 未確認換角已完成".to_string();
-                continue;
-            }
-            last_error = format!("HTTP error {}", res.status());
-            // 404 means this route does not exist on this client build: try the next one.
-            if res.status() != reqwest::StatusCode::NOT_FOUND {
-                return Err(last_error);
+            } else {
+                RouteReply::Status(res.status().as_u16())
+            };
+            if let Some(done) = outcome.record(reply) {
+                return done;
             }
         }
-        Err(last_error)
+        outcome.finish()
     }
 
     /// True when the swap is no longer pending (accepted or removed from the list).
     pub async fn swap_resolved(&self, trade_id: i64) -> bool {
-        let Ok(session) = self.fetch_champ_select_session().await else {
-            // Cannot verify (no session): assume it worked rather than blocking the flow.
-            return true;
-        };
-        let pending = session
-            .get("trades")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter().any(|t| {
-                    t.get("id").and_then(|v| v.as_i64()) == Some(trade_id)
-                        && matches!(
-                            t.get("state").and_then(|v| v.as_str()).unwrap_or(""),
-                            "RECEIVED" | "AVAILABLE" | "SENT" | "PENDING"
-                        )
-                })
-            })
-            .unwrap_or(false);
-        !pending
+        // The session can lag the 204 by a few hundred ms: poll for ~1s.
+        for attempt in 0..7 {
+            let Ok(session) = self.fetch_champ_select_session().await else {
+                // Cannot verify (no session): assume it worked rather than blocking the flow.
+                return true;
+            };
+            if !trade_still_pending(&session, trade_id) {
+                return true;
+            }
+            if attempt < 6 {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        }
+        false
     }
 
     /// Decline trade with teammate (see `accept_trade` for the endpoint history).
     pub async fn decline_trade(&self, trade_id: i64) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
         let mut last_error = String::from("champion-swaps decline endpoint unavailable");
         for base in [
             "/lol-lobby-team-builder/champ-select/v1/session/champion-swaps",
             "/lol-champ-select/v1/session/champion-swaps",
         ] {
-            let url = format!(
-                "https://127.0.0.1:{}{}/{}/decline",
-                auth.port, base, trade_id
-            );
-            let res = self
-                .http_client
-                .post(&url)
-                .header("Authorization", &auth.auth_header)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+            let path = format!("{}/{}/decline", base, trade_id);
+            let res = self.send(reqwest::Method::POST, &path, None).await?;
             if res.status().is_success() {
                 return Ok(());
             }
@@ -1031,22 +989,17 @@ impl LcuManager {
 
     /// Start a 1-player Custom Mayhem (queue 3270) champ-select session for quick testing.
     pub async fn start_custom_test_session(&self) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let lobby_url = format!("https://127.0.0.1:{}/lol-lobby/v2/lobby", auth.port);
-
-        // Check if already in a custom lobby
-        let in_lobby = match self
-            .http_client
-            .get(&lobby_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
+        self.ensure_connected().await?;
+        // An existing lobby must be a custom one: pressing search in a normal
+        // lobby would queue the player (and their party) into a real match.
+        let lobby = self.get_json_opt("/lol-lobby/v2/lobby").await;
+        if let Some(lobby) = lobby.as_ref()
+            && !lobby_is_custom(lobby)
         {
-            Ok(r) if r.status().is_success() => true,
-            _ => false,
-        };
+            return Err("目前在一般大廳，為避免誤排進正式對戰已取消；請先離開大廳再測試".to_string());
+        }
 
-        if !in_lobby {
+        if lobby.is_none() {
             let create_payload = serde_json::json!({
                 "queueId": 3270,
                 "isCustom": true,
@@ -1062,74 +1015,38 @@ impl LcuManager {
                     }
                 }
             });
-            let _ = self
-                .http_client
-                .post(&lobby_url)
-                .header("Authorization", &auth.auth_header)
-                .json(&create_payload)
-                .send()
-                .await;
+            if let Some(req) = self
+                .request(reqwest::Method::POST, "/lol-lobby/v2/lobby", Some(&create_payload))
+                .await
+            {
+                let _ = req.send().await;
+            }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
 
-        let search_url = format!(
-            "https://127.0.0.1:{}/lol-lobby/v2/lobby/matchmaking/search",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .post(&search_url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        Ok(())
+        let search = "/lol-lobby/v2/lobby/matchmaking/search";
+        self.send_unit(reqwest::Method::POST, search, None).await
     }
 
     /// Quit an active custom champ-select session back to the lobby without launching the game.
     pub async fn quit_custom_champ_select(&self) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-lobby-team-builder/champ-select/v1/session/quit",
-            auth.port
-        );
-        let res = self
-            .http_client
-            .post(&url)
-            .header("Authorization", &auth.auth_header)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
+        self.ensure_connected().await?;
+        // Leaving a matchmade champ select is a dodge; only custom games are safe.
+        let flow = self.get_json_opt("/lol-gameflow/v1/session").await;
+        if !flow.as_ref().is_some_and(gameflow_is_custom) {
+            return Err("只能退出自訂房的選角；正式對戰退出等於 dodge，已取消".to_string());
         }
-        Ok(())
+        let path = "/lol-lobby-team-builder/champ-select/v1/session/quit";
+        self.send_unit(reqwest::Method::POST, path, None).await
     }
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {
-        let auth = self.auth.read().await.clone().ok_or("LCU not connected")?;
-        let url = format!(
-            "https://127.0.0.1:{}/lol-chat/v1/conversations/{}/messages",
-            auth.port, chat_id
-        );
+        let path = format!("/lol-chat/v1/conversations/{}/messages", chat_id);
         let payload = serde_json::json!({
             "body": body,
             "type": "chat"
         });
-        let res = self
-            .http_client
-            .post(&url)
-            .header("Authorization", &auth.auth_header)
-            .json(&payload)
-            .send()
+        self.send_unit(reqwest::Method::POST, &path, Some(&payload))
             .await
-            .map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP error {}", res.status()));
-        }
-        Ok(())
     }
 
     /// Start the background watcher loop
@@ -1274,6 +1191,34 @@ impl LcuManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_trade_still_pending_ignores_idle_slots() {
+        let s = |state: &str| serde_json::json!({"trades": [{"id": 4, "state": state}]});
+        assert!(trade_still_pending(&s("RECEIVED"), 4));
+        assert!(trade_still_pending(&s("SENT"), 4));
+        assert!(!trade_still_pending(&s("AVAILABLE"), 4), "a finished trade returns to AVAILABLE");
+        assert!(!trade_still_pending(&s("INVALID"), 4));
+        assert!(!trade_still_pending(&s("RECEIVED"), 5));
+    }
+
+    #[test]
+    fn test_lobby_is_custom_only_for_custom_lobbies() {
+        let custom = serde_json::json!({"gameConfig": {"isCustom": true, "queueId": 3270}});
+        let normal = serde_json::json!({"gameConfig": {"isCustom": false, "queueId": 450}});
+        assert!(lobby_is_custom(&custom));
+        assert!(!lobby_is_custom(&normal));
+        assert!(!lobby_is_custom(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn test_gameflow_is_custom_refuses_matchmade_games() {
+        let custom = serde_json::json!({"gameData": {"isCustomGame": true}});
+        let ranked = serde_json::json!({"gameData": {"isCustomGame": false, "queue": {"id": 450}}});
+        assert!(gameflow_is_custom(&custom));
+        assert!(!gameflow_is_custom(&ranked));
+        assert!(!gameflow_is_custom(&serde_json::json!({"phase": "None"})));
+    }
     use serde_json::json;
 
     #[test]
