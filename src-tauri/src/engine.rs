@@ -523,6 +523,10 @@ pub struct ChampSelectSessionTracker {
     pub last_bench_skip_log_time: Option<std::time::Instant>, // Throttle for bench skip logs
     pub manual_snipe_generation: u64, // Bumped per manual snipe so stale retry loops exit
     pub last_bench_verdict: Option<String>, // Backend bench verdict shown on the overview card
+    /// Champion the backend currently suggests swapping to from the bench.
+    /// Assist mode only: the swap itself waits for a player click, and this field
+    /// dedupes the suggestion so it is emitted once per target.
+    pub bench_suggest_target: Option<i32>,
     pub last_trade_verdict: Option<String>, // Backend trade verdict shown on the overview card
     /// `(champ_id, spell1_id, spell2_id)` we already pushed to LCU this session.
     pub last_applied_spells: Option<(i32, i32, i32)>,
@@ -562,6 +566,7 @@ impl ChampSelectSessionTracker {
         // manual_snipe_generation stays monotonic: a loop from the previous
         // session must never match the generation of a new snipe.
         self.last_bench_verdict = None;
+        self.bench_suggest_target = None;
         self.last_trade_verdict = None;
         self.last_applied_spells = None;
         self.initial_client_spells = None;

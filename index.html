@@ -56,7 +56,9 @@
           </div>
           <div class="plabels"><span>大廳</span><span>配對中</span><span>接受對戰</span><span>選角</span><span>遊戲中</span></div>
         </div>
+        <div class="alert" id="cardSuggest" style="display:none"></div>
         <div class="alert" id="tradeAlert" style="display:none"></div>
+        <div class="alert" id="chatSuggest" style="display:none"></div>
         <div class="cols">
           <div class="card hero-card" id="miniMyChamp"></div>
           <div class="card bench-card" id="miniBench"></div>
@@ -88,22 +90,18 @@
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>開局自動選卡</h3><label class="sw"><input type="checkbox" checked data-gate="g-card" id="cfgAutoCard"><i></i></label></div>
+          <div class="card-head"><h3>開局選卡建議</h3><label class="sw"><input type="checkbox" checked data-gate="g-card" id="cfgAutoCard"><i></i></label></div>
           <div class="rows" id="g-card">
             <div class="set-row">
               <span class="set-lab">選卡策略</span>
               <span class="seg" data-seg id="cardStrategy"><button class="on" data-v="highest_score">偏好最高分</button><button data-v="only_top_tiers">只選本命／愛角</button></span>
             </div>
-            <div class="set-row">
-              <span class="set-lab">等待秒數</span>
-              <span class="sliderbox"><input type="range" min="0" max="12" step="0.1" value="3" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></span>
-            </div>
           </div>
-          <div class="hint">手動點選後不會被覆蓋</div>
+          <div class="hint">只顯示建議，由你點選</div>
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>自動搶板凳</h3><label class="sw"><input type="checkbox" checked data-gate="g-bench" id="cfgAutoBench"><i></i></label></div>
+          <div class="card-head"><h3>板凳建議</h3><label class="sw"><input type="checkbox" checked data-gate="g-bench" id="cfgAutoBench"><i></i></label></div>
           <div class="rows" id="g-bench">
             <div class="set-row">
               <span class="set-lab">分差門檻</span>
@@ -114,24 +112,16 @@
               <label class="sw"><input type="checkbox" checked id="cfgLockStopBench"><i></i></label>
             </div>
             <div class="set-row">
-              <span class="set-lab">停止搶角的倒數秒數</span>
-              <span class="sliderbox"><input type="range" min="0" max="15" value="5" data-suffix=" 秒" id="cfgStopBenchTime"><span class="val"></span></span>
-            </div>
-            <div class="set-row">
-              <span class="set-lab">解鎖後重試間隔</span>
-              <span class="sliderbox"><input type="range" min="50" max="500" step="10" value="80" data-suffix=" ms" id="cfgBenchRetryMs"><span class="val"></span></span>
-            </div>
-            <div class="set-row">
               <span class="set-lab">手動搶角間隔</span>
               <span class="sliderbox"><input type="range" min="80" max="500" step="10" value="120" data-suffix=" ms" id="cfgManualSnipeMs"><span class="val"></span></span>
             </div>
           </div>
-          <div class="hint">板凳解鎖後比對分數，3 秒冷卻</div>
-          <div class="hint">間隔越短越快，但太短可能被客戶端拒絕；預設 80 / 120 ms</div>
+          <div class="hint">板凳解鎖後比對分數，在總覽標出建議的英雄</div>
+          <div class="hint">間隔越短越快，但太短可能被客戶端拒絕；預設 120 ms</div>
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>隊友換角</h3><label class="sw"><input type="checkbox" checked data-gate="g-trade" id="cfgAutoTrade"><i></i></label></div>
+          <div class="card-head"><h3>隊友換角建議</h3><label class="sw"><input type="checkbox" checked data-gate="g-trade" id="cfgAutoTrade"><i></i></label></div>
           <div class="rows" id="g-trade">
             <div class="set-row">
               <span class="set-lab">接受分差</span>
@@ -143,22 +133,18 @@
             </div>
             <div class="set-row">
               <span class="set-lab">好友換角策略</span>
-              <span class="seg" data-seg id="friendTradePolicy"><button class="on" data-v="manual">手動決定</button><button data-v="auto_accept">自動同意</button><button data-v="same_as_stranger">同路人規則</button></span>
+              <span class="seg" data-seg id="friendTradePolicy"><button class="on" data-v="manual">手動決定</button><button data-v="auto_accept">建議同意</button><button data-v="same_as_stranger">同路人規則</button></span>
             </div>
           </div>
           <div class="hint">好友／組排發起換角時，預設由你決定</div>
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>換角發話</h3><label class="sw"><input type="checkbox" checked data-gate="g-chat" id="cfgAutoChat"><i></i></label></div>
+          <div class="card-head"><h3>換角發話建議</h3><label class="sw"><input type="checkbox" checked data-gate="g-chat" id="cfgAutoChat"><i></i></label></div>
           <div class="rows" id="g-chat">
             <div class="set-row">
-              <span class="set-lab">發送時機</span>
+              <span class="set-lab">顯示時機</span>
               <span class="chk" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></span>
-            </div>
-            <div class="set-row">
-              <span class="set-lab">發送延遲</span>
-              <span class="sliderbox"><input type="range" min="0" max="5" step="0.1" value="1" data-suffix=" 秒" id="cfgChatDelay"><span class="val"></span></span>
             </div>
             <div class="row"><div class="label"><b>自訂語句</b><span>多筆時隨機送一則；支援 {old} {new}</span></div><div class="msgs" id="msgs"></div></div>
             <div class="addrow"><input class="input" id="msgIn" placeholder="輸入訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入</button></div>

@@ -128,11 +128,26 @@ fn emit_champ_select_state(app_handle: &tauri::AppHandle, tr: &ChampSelectSessio
     let _ = app_handle.emit("lcu-champ-select-state", champ_select_ui_state(tr));
 }
 
+/// Emit one assist suggestion. The frontend shows it with a one-click button;
+/// the backend never acts on it by itself.
+fn emit_lcu_assist(app_handle: &tauri::AppHandle, payload: serde_json::Value) {
+    let _ = app_handle.emit("lcu-assist", payload);
+}
+
+/// Every suggestion belongs to one champ select session: drop them all when it ends.
+fn emit_assist_clear_all(app_handle: &tauri::AppHandle) {
+    emit_lcu_assist(
+        app_handle,
+        serde_json::json!({ "kind": "clear", "target": "all" }),
+    );
+}
+
 /// Reset the champ select tracker and tell the frontend the card is idle again.
 async fn reset_champ_select_tracker(app_handle: &tauri::AppHandle, tracker_lock: &SharedTracker) {
     let mut tr = tracker_lock.lock().await;
     tr.reset();
     emit_champ_select_state(app_handle, &tr);
+    emit_assist_clear_all(app_handle);
 }
 
 const TRAY_TOOLTIP_IDLE: &str = "ARAMPilot — 等待客戶端...";
@@ -268,19 +283,19 @@ async fn handle_tray_toggle(
             let next = !cfg.aram_settings.auto_card_select;
             cfg.aram_settings.auto_card_select = next;
             cfg.mayhem_settings.auto_card_select = next;
-            ("開局自動選卡", next)
+            ("選卡建議", next)
         }
         "toggle_bench" => {
             let next = !cfg.aram_settings.auto_bench_swap;
             cfg.aram_settings.auto_bench_swap = next;
             cfg.mayhem_settings.auto_bench_swap = next;
-            ("自動搶板凳", next)
+            ("板凳建議", next)
         }
         "toggle_trade" => {
             let next = !cfg.aram_settings.auto_trade;
             cfg.aram_settings.auto_trade = next;
             cfg.mayhem_settings.auto_trade = next;
-            ("自動處理隊友換角", next)
+            ("換角建議", next)
         }
         "toggle_chat" => {
             cfg.auto_chat_on_swap = !cfg.auto_chat_on_swap;
@@ -779,6 +794,47 @@ async fn decline_trade_request(state: State<'_, SharedLcu>, trade_id: i64) -> Re
     state.decline_trade(trade_id).await
 }
 
+/// Chat text rules shared by `send_trade_chat` and its test.
+fn validate_trade_chat_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("訊息不可為空".to_string());
+    }
+    if text.chars().count() > 200 {
+        return Err("訊息不可超過 200 字".to_string());
+    }
+    Ok(())
+}
+
+/// Send the suggested champion card the player clicked on.
+#[tauri::command]
+async fn pick_champion_card(
+    state: State<'_, SharedLcu>,
+    action_id: i64,
+    champion_id: i32,
+) -> Result<(), String> {
+    if action_id < 0 {
+        return Err("無效的選卡動作 ID".to_string());
+    }
+    if champion_id <= 0 {
+        return Err("無效的英雄 ID".to_string());
+    }
+    state.select_champion_card(action_id, champion_id).await
+}
+
+/// Send the suggested champ select chat message the player clicked on.
+#[tauri::command]
+async fn send_trade_chat(
+    state: State<'_, SharedLcu>,
+    chat_id: String,
+    text: String,
+) -> Result<(), String> {
+    if chat_id.trim().is_empty() {
+        return Err("無效的聊天室 ID".to_string());
+    }
+    validate_trade_chat_text(&text)?;
+    state.send_chat_message(&chat_id, &text).await
+}
+
 #[tauri::command]
 async fn dev_start_custom_test(state: State<'_, SharedLcu>) -> Result<(), String> {
     state.start_custom_test_session().await
@@ -868,7 +924,7 @@ fn build_tray(
     let card = CheckMenuItem::with_id(
         app,
         "toggle_card",
-        "開局自動選卡",
+        "選卡建議",
         true,
         initial_cfg.aram_settings.auto_card_select,
         None::<&str>,
@@ -876,7 +932,7 @@ fn build_tray(
     let bench = CheckMenuItem::with_id(
         app,
         "toggle_bench",
-        "自動搶板凳",
+        "板凳建議",
         true,
         initial_cfg.aram_settings.auto_bench_swap,
         None::<&str>,
@@ -884,7 +940,7 @@ fn build_tray(
     let trade = CheckMenuItem::with_id(
         app,
         "toggle_trade",
-        "自動處理隊友換角",
+        "換角建議",
         true,
         initial_cfg.aram_settings.auto_trade,
         None::<&str>,
@@ -1308,8 +1364,10 @@ pub fn run() {
             get_active_account,
             backup_config_snapshot,
             swap_bench_champion,
+            pick_champion_card,
             accept_trade_request,
             decline_trade_request,
+            send_trade_chat,
             dev_start_custom_test,
             dev_quit_champ_select,
             minimize_window,
@@ -1616,49 +1674,6 @@ fn champ_select_phase(data: &serde_json::Value) -> &str {
         .unwrap_or("")
 }
 
-/// True when our pending pick action is still open and the player has not picked
-/// a champion (or still holds the champion we saw before the delay) themselves.
-fn is_card_pick_still_pending(
-    session: &serde_json::Value,
-    action_id: i64,
-    local_cell_id: i64,
-    initial_my_champ_id: i32,
-) -> bool {
-    let action_completed = session
-        .get("actions")
-        .and_then(|v| v.as_array())
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(|g| g.as_array())
-                .flatten()
-                .any(|action| {
-                    action.get("id").and_then(|v| v.as_i64()) == Some(action_id)
-                        && action
-                            .get("completed")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                })
-        })
-        .unwrap_or(true);
-    if action_completed {
-        return false;
-    }
-
-    let current_champ_id = session
-        .get("myTeam")
-        .and_then(|v| v.as_array())
-        .and_then(|team| {
-            team.iter()
-                .find(|m| m.get("cellId").and_then(|v| v.as_i64()) == Some(local_cell_id))
-        })
-        .and_then(|m| m.get("championId"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as i32;
-
-    current_champ_id == 0 || current_champ_id == initial_my_champ_id
-}
-
 async fn handle_champ_select_event(
     event: &lcu::LcuEvent,
     app_handle: &tauri::AppHandle,
@@ -1670,6 +1685,7 @@ async fn handle_champ_select_event(
         let mut tr = tracker_lock.lock().await;
         tr.reset();
         emit_champ_select_state(app_handle, &tr);
+        emit_assist_clear_all(app_handle);
         return;
     }
 
@@ -1892,88 +1908,32 @@ async fn handle_champ_select_event(
 
             match decision {
                 CardDecision::Select { champ_id, reason } => {
-                    let lcu_clone = Arc::clone(lcu);
-                    let app_h = app_handle.clone();
-                    let tracker_card = Arc::clone(tracker_lock);
-                    let delay = settings.card_select_delay_sec.max(0.0);
-                    let initial_my_champ_id = my_champ_id;
-                    tauri::async_runtime::spawn(async move {
-                        if delay > 0.0 {
-                            tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
-                        }
-
-                        // The player may have picked manually while we were waiting.
-                        match lcu_clone.fetch_champ_select_session().await {
-                            Ok(session) => {
-                                if !is_card_pick_still_pending(
-                                    &session,
-                                    action_id,
-                                    local_cell_id,
-                                    initial_my_champ_id,
-                                ) {
-                                    let _ = app_h.emit(
-                                        "lcu-log",
-                                        serde_json::json!({
-                                            "kind": "skip",
-                                            "title": "略過自動選卡",
-                                            "reason": "玩家已手動選角，保留手動選擇"
-                                        }),
-                                    );
-                                    return;
-                                }
-                            }
-                            Err(e) => {
-                                tracker_card.lock().await.card_picked = false;
-                                let _ = app_h.emit(
-                                    "lcu-log",
-                                    serde_json::json!({
-                                        "kind": "err",
-                                        "title": "無法確認選角狀態，取消自動選卡",
-                                        "reason": format!("{}（{}）", reason, e)
-                                    }),
-                                );
-                                return;
-                            }
-                        }
-
-                        {
-                            tracker_card.lock().await.bot_expected_champ = Some(champ_id);
-                        }
-                        match lcu_clone.select_champion_card(action_id, champ_id).await {
-                            Ok(()) => {
-                                let _ = app_h.emit(
-                                    "lcu-log",
-                                    serde_json::json!({
-                                        "kind": "act",
-                                        "title": "已自動選擇開局英雄卡",
-                                        "reason": reason
-                                    }),
-                                );
-                            }
-                            Err(e) => {
-                                let mut tr_lock = tracker_card.lock().await;
-                                tr_lock.card_picked = false;
-                                if tr_lock.bot_expected_champ == Some(champ_id) {
-                                    tr_lock.bot_expected_champ = None;
-                                }
-                                let _ = app_h.emit(
-                                    "lcu-log",
-                                    serde_json::json!({
-                                        "kind": "err",
-                                        "title": "開局選卡失敗",
-                                        "reason": format!("{}（{}）", reason, e)
-                                    }),
-                                );
-                            }
-                        }
-                    });
+                    // Assist mode: never pick for the player. Suggest the card and let
+                    // the frontend send it back through `pick_champion_card`.
+                    emit_lcu_assist(
+                        app_handle,
+                        serde_json::json!({
+                            "kind": "card",
+                            "champ_id": champ_id,
+                            "action_id": action_id,
+                            "reason": reason
+                        }),
+                    );
+                    let _ = app_handle.emit(
+                        "lcu-log",
+                        serde_json::json!({
+                            "kind": "sys",
+                            "title": "建議選擇開局英雄卡",
+                            "reason": reason
+                        }),
+                    );
                 }
                 CardDecision::Skip { reason } => {
                     let _ = app_handle.emit(
                         "lcu-log",
                         serde_json::json!({
                             "kind": "skip",
-                            "title": "略過開局自動選卡",
+                            "title": "略過開局選卡建議",
                             "reason": reason
                         }),
                     );
@@ -1982,8 +1942,8 @@ async fn handle_champ_select_event(
         }
     }
 
-    // 1. Process bench sniping FIRST (prioritized over teammate trades so we grab our own favorite first)
-    let mut bench_swapped_this_tick = false;
+    // 1. Suggest a bench swap FIRST (prioritized over teammate trades so the
+    //    player sees their own favorite before an incoming trade).
     let bench_enabled = data
         .get("benchEnabled")
         .and_then(|v| v.as_bool())
@@ -2016,10 +1976,11 @@ async fn handle_champ_select_event(
             );
 
             if let BenchDecision::Skip { reason } = &decision {
-                tr.last_bench_verdict = Some(format!("略過搶板凳：{}", reason));
+                tr.last_bench_verdict = Some(format!("略過板凳建議：{}", reason));
                 // A bench skip is otherwise invisible in the log: record why the
-                // bot declined to snipe (manual hold, timing, threshold, flags).
-                // Deduped per reason and throttled so event bursts don't flood.
+                // rule engine declined to suggest a swap (manual hold, timing,
+                // threshold, flags). Deduped per reason and throttled so event
+                // bursts don't flood.
                 let key = format!("{}|{}", my_champ_id, reason);
                 let throttle_ok = tr
                     .last_bench_skip_log_time
@@ -2031,9 +1992,16 @@ async fn handle_champ_select_event(
                         "lcu-log",
                         serde_json::json!({
                             "kind": "skip",
-                            "title": "略過搶板凳",
+                            "title": "略過板凳建議",
                             "reason": reason
                         }),
+                    );
+                }
+                // There is no suggestion any more: drop the bench assist in the UI.
+                if tr.bench_suggest_target.take().is_some() {
+                    emit_lcu_assist(
+                        app_handle,
+                        serde_json::json!({ "kind": "clear", "target": "bench" }),
                     );
                 }
             }
@@ -2044,225 +2012,35 @@ async fn handle_champ_select_event(
                 ..
             } = decision
             {
-                // A retry loop is already working on this exact target: let it finish.
-                // (Do NOT return here: trade processing below must still run.)
-                if tr.bench_retry_target != Some(target_champ_id) {
-                    // Mark the intended champion BEFORE the request so the resulting
-                    // WebSocket event is recognised as a bot swap, not a manual pick.
-                    tr.bot_expected_champ = Some(target_champ_id);
-                    match lcu.swap_bench(target_champ_id).await {
-                        Ok(()) => {
-                            tr.last_bench_swap_time = Some(Instant::now());
-                            tr.bench_retry_target = None;
-                            bench_swapped_this_tick = true;
-                            tr.last_bench_verdict =
-                                Some(format!("已自動搶下板凳英雄：{}", reason));
-                            let _ = app_handle.emit(
-                                "lcu-log",
-                                serde_json::json!({
-                                    "kind": "act",
-                                    "title": "已從板凳秒換偏好英雄",
-                                    "reason": reason
-                                }),
-                            );
-                        }
-                        Err(_first_err) => {
-                            // A champion that just dropped to the bench has a 3-second server lock.
-                            // Do NOT lock our 3s cooldown on failure; spawn a fast retry loop instead.
-                            tr.bot_expected_champ = None;
-                            {
-                                tr.bench_retry_target = Some(target_champ_id);
-                                let lcu_retry = Arc::clone(lcu);
-                                let tracker_retry = Arc::clone(tracker_lock);
-                                let app_retry = app_handle.clone();
-                                let reason_retry = reason.clone();
-                                let stop_sec = settings.stop_bench_remaining_sec;
-                                let bench_retry_ms = config.bench_retry_interval_ms;
-                                // Keep the same ~3.6s retry window whatever the interval is.
-                                let max_attempts: u32 = 3600_u64.div_ceil(bench_retry_ms)
-                                    .max(1) as u32;
-
-                                tauri::async_runtime::spawn(async move {
-                                    // Riot's champ select rules (25.13+ champion cards):
-                                    //
-                                    //   * A champion in the bench that was part of OUR OWN offering
-                                    //     unlocks 3 seconds after our own initial selection.
-                                    //   * A teammate's champion stays locked for the rest of the
-                                    //     reveal phase and only unlocks 3 seconds into the 45s
-                                    //     finalization phase.
-                                    //
-                                    // Instead of hammering blindly we compute the exact unlock
-                                    // moment and send a short 80ms burst right at it.
-                                    let target_is_our_offer = {
-                                        let tr_lock = tracker_retry.lock().await;
-                                        tr_lock.our_offer_cards.contains(&target_champ_id)
-                                    };
-                                    let mut post_attempts = 0u32;
-                                    let mut polls = 0u32;
-                                    loop {
-                                        // Cheap in-memory checks first: never spend a request when the
-                                        // player took over or a newer target replaced this one.
-                                        {
-                                            let tr_lock = tracker_retry.lock().await;
-                                            if tr_lock.bench_retry_target != Some(target_champ_id) {
-                                                return;
-                                            }
-                                            if tr_lock.manual_bench_hold.is_some() {
-                                                return;
-                                            }
-                                        }
-
-                                        // Only fetch the full session while waiting for the phase lock
-                                        // or every 5th burst attempt so GET latency never slows down the POST burst.
-                                        if post_attempts == 0 || post_attempts.is_multiple_of(5) {
-                                            let Ok(session) =
-                                                lcu_retry.fetch_champ_select_session().await
-                                            else {
-                                                break;
-                                            };
-
-                                            let still_on_bench = session
-                                                .get("benchChampions")
-                                                .and_then(|v| v.as_array())
-                                                .map(|arr| {
-                                                    arr.iter().any(|b| {
-                                                        b.get("championId").and_then(|v| v.as_i64())
-                                                            == Some(target_champ_id as i64)
-                                                    })
-                                                })
-                                                .unwrap_or(false);
-                                            if !still_on_bench {
-                                                break;
-                                            }
-                                            if let Some(rem) = remaining_phase_secs(&session)
-                                                && rem <= stop_sec
-                                            {
-                                                break;
-                                            }
-
-                                            // How long until the server lets us swap to this champion?
-                                            // Start the 80ms burst at 2.85s (150ms early) so our POST
-                                            // lands on the exact millisecond the 3.0s server lock expires.
-                                            let phase = champ_select_phase(&session);
-                                            let lock_remaining: f64 = if phase == "FINALIZATION" {
-                                                let elapsed =
-                                                    phase_elapsed_ms(&session).unwrap_or(0) as f64
-                                                        / 1000.0;
-                                                (2.85 - elapsed).max(0.0)
-                                            } else if target_is_our_offer {
-                                                let picked = {
-                                                    let tr_lock = tracker_retry.lock().await;
-                                                    tr_lock.our_pick_time
-                                                };
-                                                match picked {
-                                                    Some(t) => {
-                                                        (2.85 - t.elapsed().as_secs_f64()).max(0.0)
-                                                    }
-                                                    None => 0.15,
-                                                }
-                                            } else {
-                                                // Reveal phase with a teammate's champion: locked until
-                                                // FINALIZATION + 3s. Re-check every 150ms for phase transition.
-                                                0.15
-                                            };
-
-                                            if lock_remaining > 0.001 {
-                                                tokio::time::sleep(
-                                                    std::time::Duration::from_secs_f64(
-                                                        lock_remaining.min(0.15),
-                                                    ),
-                                                )
-                                                .await;
-                                                polls += 1;
-                                                if polls > 150 {
-                                                    break;
-                                                }
-                                                continue;
-                                            }
-                                        }
-
-                                        // Unlocked (or in a 3s mid-phase swap cooldown): burst every
-                                        // `bench_retry_ms` for up to ~3.6s of attempts to cover a full
-                                        // 3s bench lock.
-                                        {
-                                            let mut tr_lock = tracker_retry.lock().await;
-                                            tr_lock.bot_expected_champ = Some(target_champ_id);
-                                        }
-                                        if lcu_retry.swap_bench(target_champ_id).await.is_ok() {
-                                            let mut tr_lock = tracker_retry.lock().await;
-                                            tr_lock.last_bench_swap_time = Some(Instant::now());
-                                            tr_lock.bench_retry_target = None;
-                                            tr_lock.bot_expected_champ = Some(target_champ_id);
-                                            tr_lock.manual_bench_hold = None;
-                                            let _ = app_retry.emit(
-                                                "lcu-log",
-                                                serde_json::json!({
-                                                    "kind": "act",
-                                                    "title": "已從板凳秒換偏好英雄",
-                                                    "reason": reason_retry
-                                                }),
-                                            );
-                                            return;
-                                        }
-
-                                        // The attempt failed: clear the expectation so a later
-                                        // manual pick of the same champion is still detected.
-                                        {
-                                            let mut tr_lock = tracker_retry.lock().await;
-                                            if tr_lock.bot_expected_champ == Some(target_champ_id) {
-                                                tr_lock.bot_expected_champ = None;
-                                            }
-                                        }
-                                        post_attempts += 1;
-                                        if post_attempts >= max_attempts {
-                                            break;
-                                        }
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            bench_retry_ms,
-                                        ))
-                                        .await;
-                                    }
-
-                                    let mut tr_lock = tracker_retry.lock().await;
-                                    let still_ours = tr_lock.bench_retry_target == Some(target_champ_id);
-                                    if still_ours {
-                                        tr_lock.bench_retry_target = None;
-                                        tr_lock.last_bench_verdict = Some(format!(
-                                            "搶板凳未成功：{}",
-                                            reason_retry
-                                        ));
-                                    }
-                                    if tr_lock.bot_expected_champ == Some(target_champ_id) {
-                                        tr_lock.bot_expected_champ = None;
-                                    }
-                                    if still_ours {
-                                        // Retry chain ended without a successful swap
-                                        // (locks, rejected attempts, or the window closed):
-                                        // leave a visible trace instead of failing silently.
-                                        let _ = app_retry.emit(
-                                            "lcu-log",
-                                            serde_json::json!({
-                                                "kind": "err",
-                                                "title": "搶板凳未成功",
-                                                "reason": format!(
-                                                    "多次重試後仍無法換到【{}】，由玩家手動決定",
-                                                    reason_retry
-                                                )
-                                            }),
-                                        );
-                                    }
-                                });
-                            }
-                        }
-                    }
+                tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
+                // Assist mode: only suggest the swap. `swap_bench_champion` sends it
+                // once the player clicks, and only then does the backend touch the LCU.
+                // Emit once per suggested target so event bursts do not spam the UI.
+                if tr.bench_suggest_target != Some(target_champ_id) {
+                    tr.bench_suggest_target = Some(target_champ_id);
+                    emit_lcu_assist(
+                        app_handle,
+                        serde_json::json!({
+                            "kind": "bench",
+                            "champ_id": target_champ_id,
+                            "reason": reason.clone()
+                        }),
+                    );
+                    let _ = app_handle.emit(
+                        "lcu-log",
+                        serde_json::json!({
+                            "kind": "sys",
+                            "title": "建議換成板凳英雄",
+                            "reason": reason
+                        }),
+                    );
                 }
             }
         }
     }
 
-    // 2. Process trade requests from teammates (if we didn't just swap from the bench)
-    if !bench_swapped_this_tick && let Some(trades) = data.get("trades").and_then(|v| v.as_array())
-    {
+    // 2. Suggest a verdict for incoming trade requests from teammates
+    if let Some(trades) = data.get("trades").and_then(|v| v.as_array()) {
         if !tr.allies_loaded {
             let (puuids, sids) = lcu.fetch_allied_friend_identifiers().await;
             // A single failed/empty fetch must not permanently disable friendship
@@ -2360,75 +2138,56 @@ async fn handle_champ_select_event(
                             trade_id, reason, ..
                         } => {
                             tr.processed_trade_ids.insert(trade_id);
-                            tr.last_trade_verdict = Some(format!("自動同意換角：{}", reason));
-                            // The resulting champion change is the bot's, not a manual pick.
-                            tr.bot_expected_champ = Some(teammate_champ_id);
-                            // The tracker stays locked while the LCU confirms: bench
-                            // retries and manual grabs share the single bot_expected_champ
-                            // slot and must not overwrite it mid-swap. Usually one session
-                            // fetch; ~2s when a route answers but never confirms; longer
-                            // only if the LCU itself stalls (5s HTTP timeout per request).
-                            // WS events are handled one at a time, so the swap's champion
-                            // change is classified after this.
-                            match lcu.accept_trade(trade_id).await {
-                                Ok(()) => {
-                                    if config.chat_on_accept_teammate {
-                                        tr.swap_confirmed_chat_pending =
-                                            Some((my_champ_id, teammate_champ_id));
-                                    }
-                                    let _ = app_handle.emit(
-                                        "lcu-log",
-                                        serde_json::json!({
-                                            "kind": "act",
-                                            "title": "已自動同意隊友換角",
-                                            "reason": reason
-                                        }),
-                                    );
-                                }
-                                Err(e) => {
-                                    // Unconfirmed is not failed: the swap may still land,
-                                    // and its champion change must not look manual.
-                                    if e != lcu::TRADE_UNCONFIRMED {
-                                        tr.bot_expected_champ = None;
-                                    }
-                                    let _ = app_handle.emit(
-                                        "lcu-log",
-                                        serde_json::json!({
-                                            "kind": "err",
-                                            "title": "自動同意換角失敗",
-                                            "reason": format!("{}（{}）", reason, e)
-                                        }),
-                                    );
-                                }
+                            tr.last_trade_verdict = Some(format!("建議同意換角：{}", reason));
+                            // Assist mode: never accept for the player. The frontend
+                            // shows the suggestion and `accept_trade_request` sends it.
+                            // Remember the pair so the chat suggestion can fire once the
+                            // accepted swap actually lands.
+                            if config.chat_on_accept_teammate {
+                                tr.swap_confirmed_chat_pending =
+                                    Some((my_champ_id, teammate_champ_id));
                             }
+                            emit_lcu_assist(
+                                app_handle,
+                                serde_json::json!({
+                                    "kind": "trade",
+                                    "trade_id": trade_id,
+                                    "verdict": "accept",
+                                    "reason": reason
+                                }),
+                            );
+                            let _ = app_handle.emit(
+                                "lcu-log",
+                                serde_json::json!({
+                                    "kind": "sys",
+                                    "title": "建議同意隊友換角",
+                                    "reason": reason
+                                }),
+                            );
                         }
                         TradeDecision::Reject {
                             trade_id, reason, ..
                         } => {
                             tr.processed_trade_ids.insert(trade_id);
-                            tr.last_trade_verdict = Some(format!("自動拒絕換角：{}", reason));
-                            match lcu.decline_trade(trade_id).await {
-                                Ok(()) => {
-                                    let _ = app_handle.emit(
-                                        "lcu-log",
-                                        serde_json::json!({
-                                            "kind": "act",
-                                            "title": "已自動拒絕隊友換角",
-                                            "reason": reason
-                                        }),
-                                    );
-                                }
-                                Err(e) => {
-                                    let _ = app_handle.emit(
-                                        "lcu-log",
-                                        serde_json::json!({
-                                            "kind": "err",
-                                            "title": "自動拒絕換角失敗",
-                                            "reason": format!("{}（{}）", reason, e)
-                                        }),
-                                    );
-                                }
-                            }
+                            tr.last_trade_verdict = Some(format!("建議拒絕換角：{}", reason));
+                            // Assist mode: only suggest; `decline_trade_request` sends it.
+                            emit_lcu_assist(
+                                app_handle,
+                                serde_json::json!({
+                                    "kind": "trade",
+                                    "trade_id": trade_id,
+                                    "verdict": "reject",
+                                    "reason": reason
+                                }),
+                            );
+                            let _ = app_handle.emit(
+                                "lcu-log",
+                                serde_json::json!({
+                                    "kind": "sys",
+                                    "title": "建議拒絕隊友換角",
+                                    "reason": reason
+                                }),
+                            );
                         }
                         TradeDecision::Skip { reason, .. } => {
                             tr.processed_trade_ids.insert(trade_id);
@@ -2456,7 +2215,7 @@ async fn handle_champ_select_event(
         }
     }
 
-    // 3. Send friendly thank-you chat once a swap actually landed
+    // 3. Suggest a friendly thank-you chat once a swap actually landed
     if my_champ_id != 0 && my_champ_id != old_champ_id {
         let mut pending_chat: Option<(i32, i32)> = None;
 
@@ -2505,37 +2264,24 @@ async fn handle_champ_select_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if !chat_id.is_empty() {
-                let lcu_clone = Arc::clone(lcu);
-                let chat_id_str = chat_id.to_string();
-                let app_h = app_handle.clone();
-                let chat_delay = config.chat_delay_sec.max(0.0);
-                tauri::async_runtime::spawn(async move {
-                    if chat_delay > 0.0 {
-                        tokio::time::sleep(std::time::Duration::from_secs_f64(chat_delay)).await;
-                    }
-                    match lcu_clone.send_chat_message(&chat_id_str, &formatted).await {
-                        Ok(()) => {
-                            let _ = app_h.emit(
-                                "lcu-log",
-                                serde_json::json!({
-                                    "kind": "act",
-                                    "title": "已在選角室發送訊息",
-                                    "reason": formatted
-                                }),
-                            );
-                        }
-                        Err(e) => {
-                            let _ = app_h.emit(
-                                "lcu-log",
-                                serde_json::json!({
-                                    "kind": "err",
-                                    "title": "選角室訊息發送失敗",
-                                    "reason": format!("{}（{}）", formatted, e)
-                                }),
-                            );
-                        }
-                    }
-                });
+                // Assist mode: never post the message for the player. The frontend
+                // shows it and `send_trade_chat` sends it on click.
+                emit_lcu_assist(
+                    app_handle,
+                    serde_json::json!({
+                        "kind": "chat",
+                        "chat_id": chat_id,
+                        "text": formatted.clone()
+                    }),
+                );
+                let _ = app_handle.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": "sys",
+                        "title": "建議發送選角室訊息",
+                        "reason": formatted
+                    }),
+                );
             }
         }
     }
@@ -2547,9 +2293,9 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        champ_select_phase, is_card_pick_still_pending, manual_bench_lock_remaining,
-        now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs,
-        session_my_champ_id, append_line_rotating, SaveConfigError,
+        SaveConfigError, append_line_rotating, champ_select_phase, manual_bench_lock_remaining,
+        now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
+        validate_trade_chat_text,
     };
     use crate::config;
     use serde_json::json;
@@ -2662,29 +2408,13 @@ mod tests {
     }
 
     #[test]
-    fn test_is_card_pick_still_pending() {
-        let session = json!({
-            "actions": [[{ "id": 7, "completed": false }]],
-            "myTeam": [{ "cellId": 2, "championId": 0 }]
-        });
-        assert!(is_card_pick_still_pending(&session, 7, 2, 0));
-
-        // Player picked manually while we were sleeping.
-        let manual_pick = json!({
-            "actions": [[{ "id": 7, "completed": false }]],
-            "myTeam": [{ "cellId": 2, "championId": 103 }]
-        });
-        assert!(!is_card_pick_still_pending(&manual_pick, 7, 2, 0));
-
-        // Action already completed (e.g. by us or the client).
-        let completed = json!({
-            "actions": [[{ "id": 7, "completed": true }]],
-            "myTeam": [{ "cellId": 2, "championId": 0 }]
-        });
-        assert!(!is_card_pick_still_pending(&completed, 7, 2, 0));
-
-        // Session without action data is treated as not pending.
-        assert!(!is_card_pick_still_pending(&json!({}), 7, 2, 0));
+    fn test_validate_trade_chat_text() {
+        assert!(validate_trade_chat_text("謝啦！{new} 交給我").is_ok());
+        assert!(validate_trade_chat_text("   ").is_err());
+        assert!(validate_trade_chat_text("").is_err());
+        // 200 characters pass, 201 do not.
+        assert!(validate_trade_chat_text(&"字".repeat(200)).is_ok());
+        assert!(validate_trade_chat_text(&"字".repeat(201)).is_err());
     }
 
     #[test]

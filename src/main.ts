@@ -8,6 +8,7 @@ import { BUILTIN_CHAMPIONS } from "./champions";
 import { createPairMemory, pickPair } from "./pkPairing";
 import { validateImportedConfig } from "./importValidation";
 import { classifySaveError, type SaveResult } from "./saveResult";
+import { applyAssist, emptyAssist, type AssistPayload, type AssistState } from "./assist";
 import {
   captureLive,
   isDirty,
@@ -397,6 +398,16 @@ function defaultModeSettings(): ModeSettings {
 let currentSettings: ModeSettings = defaultModeSettings();
 let ffTime = "08:00";
 
+/**
+ * Settings whose input was removed from the 自動化 page because they only mattered
+ * while the app acted on its own. The config fields stay, so the last loaded value
+ * is carried through every save instead of being reset to the default.
+ */
+let cardSelectDelaySec = 1.5;
+let stopBenchRemainingSec = 5;
+let benchRetryIntervalMs = 80;
+let chatDelaySec = 1;
+
 const ACCEPT_MODE_OPTIONS = ["ARAM", "Mayhem", "其他"];
 let acceptModes: string[] = ["ARAM", "Mayhem"];
 
@@ -434,12 +445,12 @@ function readModeSettingsFromUI(): ModeSettings {
   const reject = activeSegValue("rejTier");
   return {
     auto_card_select: checkboxValue("cfgAutoCard", true),
-    card_select_delay_sec: numberValue("cfgCardDelay", 3),
+    card_select_delay_sec: cardSelectDelaySec,
     card_select_strategy: activeSegValue("cardStrategy") || "highest_score",
     auto_bench_swap: checkboxValue("cfgAutoBench", true),
     bench_diff_threshold: numberValue("cfgBenchDiff", 10),
     lock_stop_bench: checkboxValue("cfgLockStopBench", true),
-    stop_bench_remaining_sec: numberValue("cfgStopBenchTime", 5),
+    stop_bench_remaining_sec: stopBenchRemainingSec,
     auto_trade: checkboxValue("cfgAutoTrade", true),
     trade_accept_diff: numberValue("thAccept", 10),
     trade_reject_tiers: REJECT_TIER_VALUES[reject] ?? ["本命"],
@@ -452,12 +463,12 @@ function readModeSettingsFromUI(): ModeSettings {
 
 function writeModeSettingsToUI(s: ModeSettings) {
   setCheckbox("cfgAutoCard", s.auto_card_select);
-  setRangeValue("cfgCardDelay", s.card_select_delay_sec);
+  cardSelectDelaySec = s.card_select_delay_sec;
   setSegValue("cardStrategy", s.card_select_strategy);
   setCheckbox("cfgAutoBench", s.auto_bench_swap);
   setRangeValue("cfgBenchDiff", s.bench_diff_threshold);
   setCheckbox("cfgLockStopBench", s.lock_stop_bench);
-  setRangeValue("cfgStopBenchTime", s.stop_bench_remaining_sec);
+  stopBenchRemainingSec = s.stop_bench_remaining_sec;
   setCheckbox("cfgAutoTrade", s.auto_trade);
   setRangeValue("thAccept", s.trade_accept_diff);
   setSegValue("rejTier", rejectTiersToValue(s.trade_reject_tiers));
@@ -931,7 +942,7 @@ function renderTradeSim() {
     why = "同一隻英雄，無需交換";
   } else if (isFriend && friendPolicy === "auto_accept") {
     kind = "accept";
-    why = `🤝 組排/好友換角特權：自動同意讓出【${myChamp.n}】換取【${offerChamp.n}】`;
+    why = `🤝 組排/好友換角特權：建議同意讓出【${myChamp.n}】換取【${offerChamp.n}】`;
   } else if (isFriend && friendPolicy === "manual") {
     kind = "skip";
     why = `🤝 組排/好友發起換角（想用【${offerChamp.n}】換你的【${myChamp.n}】），保留由你手動決定`;
@@ -2518,7 +2529,7 @@ function collectConfig(): AppConfig {
     aram_settings: currentSettings,
     mayhem_settings: { ...currentSettings },
     auto_chat_on_swap: checkboxValue("cfgAutoChat", true),
-    chat_delay_sec: numberValue("cfgChatDelay", 1),
+    chat_delay_sec: chatDelaySec,
     chat_messages: [...chatMessages],
     chat_on_accept_teammate: activeChkValues("cfgChatTriggers").includes("accept_teammate"),
     chat_on_teammate_accept_mine: activeChkValues("cfgChatTriggers").includes("teammate_accept_mine"),
@@ -2531,7 +2542,7 @@ function collectConfig(): AppConfig {
     ff_play_sound: activeChkValues("cfgFfMethods").includes("sound"),
     ff_desktop_notify: activeChkValues("cfgFfMethods").includes("notification"),
     ff_lead_sec: numberValue("cfgFfLead", 0),
-    bench_retry_interval_ms: numberValue("cfgBenchRetryMs", 80),
+    bench_retry_interval_ms: benchRetryIntervalMs,
     manual_snipe_interval_ms: numberValue("cfgManualSnipeMs", 120),
     client_close_action: activeSegValue("cfgClientCloseAction") || "wait",
     close_to_tray: checkboxValue("cfgCloseToTray", true),
@@ -2635,6 +2646,12 @@ async function initLcuBackend() {
     if (lastChampSelectData) renderOverviewColumns();
   });
 
+  // Suggestion-only assists: the backend never acts on its own, the overview offers the click.
+  await listen<AssistPayload>("lcu-assist", (event) => {
+    assistState = applyAssist(assistState, event.payload);
+    renderOverviewColumns();
+  });
+
   await listen("lcu-ready-accepted", () => {
     notifyAccept();
   });
@@ -2725,7 +2742,7 @@ function applyConfigToUI(cfg: AppConfig) {
   writeModeSettingsToUI(currentSettings);
 
   setCheckbox("cfgAutoChat", cfg.auto_chat_on_swap ?? true);
-  setRangeValue("cfgChatDelay", cfg.chat_delay_sec ?? 1);
+  chatDelaySec = cfg.chat_delay_sec ?? 1;
   if (Array.isArray(cfg.chat_messages)) {
     chatMessages = cfg.chat_messages;
     renderChatMessages();
@@ -2742,7 +2759,7 @@ function applyConfigToUI(cfg: AppConfig) {
   ffTime = cfg.ff_time_aram || cfg.ff_time_mayhem || "08:00";
   setTextInput("cfgFfTime", ffTime);
   setRangeValue("cfgFfLead", cfg.ff_lead_sec ?? 0);
-  setRangeValue("cfgBenchRetryMs", cfg.bench_retry_interval_ms ?? 80);
+  benchRetryIntervalMs = cfg.bench_retry_interval_ms ?? 80;
   setRangeValue("cfgManualSnipeMs", cfg.manual_snipe_interval_ms ?? 120);
   setCheckbox("cfgFfCooldownReminder", cfg.ff_cooldown_reminder ?? false);
   setChkValues(
@@ -2985,6 +3002,8 @@ const EMPTY_UI_STATE: ChampSelectUiState = {
 const TRADE_VERDICT_DEFAULT = "條件外或組排好友設為手動時，由你手動決定";
 
 let champUiState: ChampSelectUiState = { ...EMPTY_UI_STATE };
+/** Champ select suggestions pushed by the backend; the overview renders them with one-click buttons. */
+let assistState: AssistState = emptyAssist();
 let lastChampSelectData: any = null;
 let overviewMyChampId = 0;
 let ovSpellTrayOpen = false;
@@ -3089,13 +3108,15 @@ function renderBenchColumn(
       e.score - baseScore >= benchDiff
   );
   const bestId = eligible.length ? eligible[0].id : null;
+  // A backend suggestion wins over the locally computed best candidate.
+  const suggestedId = assistState.bench?.champId ?? bestId;
 
   const rows = entries
     .map((e) => {
       const name = e.champ?.n || `ID:${e.id}`;
       const diff = e.score != null && baseScore != null ? e.score - baseScore : null;
       const retrying = champUiState.bench_retry_target === e.id;
-      const hot = e.id === bestId;
+      const suggested = e.id === suggestedId;
       // 封印 / nograb champions are never grabbed; everything else is a manual candidate.
       const blocked = e.champ?.t === "封印" || e.champ?.f === "nograb";
       const grabbable = !blocked && !retrying && overviewMyChampId > 0;
@@ -3104,9 +3125,11 @@ function renderBenchColumn(
         : retrying
           ? `<span class="grabbing">搶角中…</span>`
           : grabbable
-            ? `<button class="grab" data-swap-bench="${e.id}" title="點擊手動換上">搶角</button>`
+            ? suggested
+              ? `<button class="grab primary" data-swap-bench="${e.id}" title="點擊換上建議的英雄">建議換</button>`
+              : `<button class="grab" data-swap-bench="${e.id}" title="點擊手動換上">搶角</button>`
             : "";
-      return `<div class="bench-row${hot ? " hot" : ""}">${img(
+      return `<div class="bench-row${suggested ? " hot" : ""}">${img(
         e.id,
         name
       )}
@@ -3117,11 +3140,18 @@ function renderBenchColumn(
     })
     .join("");
 
+  const suggestedName =
+    suggestedId != null
+      ? entries.find((e) => e.id === suggestedId)?.champ?.n || `ID:${suggestedId}`
+      : "";
+  const suggestedReason = assistState.bench?.reason || "";
   const caption = champUiState.bench_verdict
     ? escapeHtml(champUiState.bench_verdict)
-    : entries.length > 0
-      ? `未達門檻（${benchDiff}），不會自動換入`
-      : `還沒進選角`;
+    : entries.length === 0
+      ? `還沒進選角`
+      : suggestedId != null
+        ? `建議換上 ${escapeHtml(suggestedName)}${suggestedReason ? `・${escapeHtml(suggestedReason)}` : ""}`
+        : `沒有建議換的英雄（${benchDiff} 分）`;
 
   el.innerHTML = `
     <h3>板凳<span class="sub">依權重排序</span></h3>
@@ -3169,9 +3199,13 @@ function renderTradeColumn(
     `隊友 #${trade.cellId}`;
   const myName = myChamp?.n || (myChampId > 0 ? `ID:${myChampId}` : "—");
   const tradeId = Number(trade.id) || 0;
+  // A backend verdict marks the matching button as the suggestion; without one both stay plain.
+  const suggestion = tradeId > 0 ? assistState.trades[tradeId] : undefined;
+  const suggestLabel = suggestion ? (suggestion.verdict === "accept" ? "建議同意" : "建議拒絕") : "";
+  const reasonText = suggestion?.reason ? escapeHtml(suggestion.reason) : verdict;
   const buttons =
     tradeId > 0
-      ? `<span class="btn primary" data-accept-trade="${tradeId}">同意</span><span class="btn" data-decline-trade="${tradeId}">拒絕</span>`
+      ? `<span class="btn${suggestion?.verdict === "accept" ? " primary" : ""}" data-accept-trade="${tradeId}">同意</span><span class="btn${suggestion?.verdict === "reject" ? " primary" : ""}" data-decline-trade="${tradeId}">拒絕</span>`
       : "";
 
   el.style.display = "";
@@ -3179,8 +3213,52 @@ function renderTradeColumn(
     <img src="${ICON(offeredId)}" alt="" />
     <span class="tx"><b>${escapeHtml(String(traderName))}</b>（${isFriend ? "隊友" : "路人"}）想用 <b>${escapeHtml(
       offered?.n || `ID:${offeredId}`
-    )}</b> 換你的 <b>${escapeHtml(myName)}</b>・分差 ${signedDiff(diff)}（門檻 ${tradeDiff}）${verdict ? `・${verdict}` : ""}</span>
+    )}</b> 換你的 <b>${escapeHtml(myName)}</b>・分差 ${signedDiff(diff)}（門檻 ${tradeDiff}）${
+      suggestLabel ? `・${suggestLabel}` : ""
+    }${reasonText ? `・${reasonText}` : ""}</span>
     <span class="btns">${buttons}</span>`;
+}
+
+/**
+ * Card and chat suggestions live in their own one-click banners above the columns.
+ * Both stay in the DOM (hidden when empty) so their click handlers are bound once.
+ */
+function renderAssistBanners() {
+  const cardEl = document.getElementById("cardSuggest");
+  if (cardEl) {
+    const card = assistState.card;
+    if (!card || card.champId <= 0) {
+      cardEl.style.display = "none";
+      cardEl.innerHTML = "";
+    } else {
+      const name = profileList.find((c) => c.id === card.champId)?.n || `ID:${card.champId}`;
+      cardEl.style.display = "";
+      cardEl.innerHTML = `
+    <img src="${ICON(card.champId)}" alt="" />
+    <span class="tx"><b>${escapeHtml(name)}</b>・建議選這張${
+        card.reason ? `<span class="reason">${escapeHtml(card.reason)}</span>` : ""
+      }</span>
+    <span class="btns"><span class="btn primary" data-pick-card="${card.champId}" data-pick-action="${
+        card.actionId
+      }">選這張</span></span>`;
+    }
+  }
+
+  const chatEl = document.getElementById("chatSuggest");
+  if (chatEl) {
+    const chat = assistState.chat;
+    if (!chat || !chat.text) {
+      chatEl.style.display = "none";
+      chatEl.innerHTML = "";
+    } else {
+      chatEl.style.display = "";
+      chatEl.innerHTML = `
+    <span class="tx">發送：<b>${escapeHtml(chat.text)}</b></span>
+    <span class="btns"><span class="btn primary" data-send-chat="${escapeHtml(
+      chat.chatId
+    )}">發送</span><span class="btn" data-skip-chat="1">略過</span></span>`;
+    }
+  }
 }
 
 function renderOverviewColumns() {
@@ -3210,6 +3288,7 @@ function renderOverviewColumns() {
   renderMyChampColumn(myChampId, myChamp, myScore);
   renderBenchColumn(bench, profile, scores, baseScore, benchDiff);
   renderTradeColumn(data, profile, scores, myChampId, baseScore, tradeDiff);
+  renderAssistBanners();
 }
 
 document.getElementById("miniBench")?.addEventListener("click", (e) => {
@@ -3308,9 +3387,47 @@ document.getElementById("tradeAlert")?.addEventListener("click", (e) => {
   }
 });
 
+document.getElementById("cardSuggest")?.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest("[data-pick-card]") as HTMLElement | null;
+  if (!btn) return;
+  const championId = Number(btn.dataset.pickCard);
+  const actionId = Number(btn.dataset.pickAction);
+  if (championId <= 0 || actionId < 0) return;
+  const name = profileList.find((c) => c.id === championId)?.n || `ID:${championId}`;
+  invoke("pick_champion_card", { actionId, championId })
+    .then(() => {
+      assistState = applyAssist(assistState, { kind: "clear", target: "card" });
+      addLog("act", "已選擇開局英雄卡", name);
+      renderOverviewColumns();
+    })
+    .catch((err) => addLog("err", "選擇開局英雄卡失敗", String(err)));
+});
+
+document.getElementById("chatSuggest")?.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest("[data-skip-chat]")) {
+    assistState = applyAssist(assistState, { kind: "clear", target: "chat" });
+    renderOverviewColumns();
+    return;
+  }
+  const btn = target.closest("[data-send-chat]") as HTMLElement | null;
+  if (!btn) return;
+  const chatId = btn.dataset.sendChat || "";
+  const text = assistState.chat?.text || "";
+  if (!chatId || !text) return;
+  invoke("send_trade_chat", { chatId, text })
+    .then(() => {
+      assistState = applyAssist(assistState, { kind: "clear", target: "chat" });
+      addLog("act", "已發送換角訊息", text);
+      renderOverviewColumns();
+    })
+    .catch((err) => addLog("err", "發送換角訊息失敗", String(err)));
+});
+
 function resetOverviewMiniCards() {
   lastChampSelectData = null;
   champUiState = { ...EMPTY_UI_STATE };
+  assistState = emptyAssist();
   renderOverviewColumns();
 }
 
