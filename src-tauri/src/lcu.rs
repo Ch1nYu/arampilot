@@ -1004,7 +1004,7 @@ impl LcuManager {
                 "queueId": 3270,
                 "isCustom": true,
                 "customGameLobby": {
-                    "lobbyName": "ARAM Assistant Test",
+                    "lobbyName": "ARAMPilot Test",
                     "lobbyPassword": "",
                     "configuration": {
                         "mapId": 12,

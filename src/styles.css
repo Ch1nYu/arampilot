@@ -487,6 +487,8 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .confirm-box { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
 .confirm-box h3 { margin: 0; font-size: 15px; }
+/* Keep line breaks in dialog text (release notes); long text scrolls. */
+.confirm-box .card-desc { white-space: pre-line; max-height: 260px; overflow-y: auto; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* Remembered per-champion secondary spells (settings) */

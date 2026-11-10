@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <link rel="icon" href="data:,">
-  <title>ARAM ASSISTANT</title>
+  <title>ARAMPilot</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/src/styles.css">
@@ -14,7 +14,7 @@
   <header class="titlebar" data-tauri-drag-region>
     <div class="brand">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 1.5l7.5 4.3v8.4L10 18.5l-7.5-4.3V5.8z"/><path d="M10 6l3.5 2v4L10 14l-3.5-2V8z" fill="currentColor" stroke="none"/></svg>
-      ARAM ASSISTANT
+      ARAMPILOT
     </div>
     <div class="status">
       <span class="pill account" id="accountPill" hidden></span>
@@ -390,6 +390,18 @@
           <div class="set-row">
             <span class="set-lab">匯出 / 匯入偏好設定檔</span>
             <div style="display:flex;gap:6px"><button class="btn" id="btnExportJson">匯出 JSON</button><button class="btn" id="btnImportJson">匯入 JSON</button><input type="file" id="importFile" accept="application/json,.json" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>版本與更新</h3></div>
+          <div class="set-row">
+            <span class="set-lab">目前版本</span>
+            <span id="appVersionText" style="color:var(--muted)">v—</span>
+          </div>
+          <div class="set-row">
+            <span class="set-lab" id="updateStatusText">尚未檢查更新</span>
+            <button class="btn" id="btnCheckUpdate">檢查更新</button>
           </div>
         </div>
 

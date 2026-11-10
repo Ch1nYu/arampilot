@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ARAM Assistant",
+  "productName": "ARAMPilot",
   "version": "0.1.0",
-  "identifier": "com.lolafk.assistant",
+  "identifier": "io.github.ch1nyu.arampilot",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1421",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ARAM ASSISTANT",
+        "title": "ARAMPilot",
         "width": 1040,
         "height": 680,
         "minWidth": 960,
@@ -32,13 +32,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUzRkFEQUYxMkM0MDU2OTUKUldTVlZrQXM4ZHI2VTlwREtpaFhxZWlOZVI4RDNRTE10cE5EMDBDWm50SkJ6d0h2Q3VPSlA4V20K",
+      "endpoints": [
+        "https://github.com/Ch1nYu/arampilot/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

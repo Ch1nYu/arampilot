@@ -135,7 +135,7 @@ async fn reset_champ_select_tracker(app_handle: &tauri::AppHandle, tracker_lock:
     emit_champ_select_state(app_handle, &tr);
 }
 
-const TRAY_TOOLTIP_IDLE: &str = "ARAM Assistant — 等待客戶端...";
+const TRAY_TOOLTIP_IDLE: &str = "ARAMPilot — 等待客戶端...";
 
 /// Menu item handles the backend keeps in sync with the live `AppConfig`.
 struct TrayHandles {
@@ -226,7 +226,7 @@ fn update_tray_status(
     let _ = handles.status_lcu.set_text(&lcu_text);
     let _ = handles.status_phase.set_text(&phase_text);
     let tooltip = format!(
-        "ARAM Assistant — {}",
+        "ARAMPilot — {}",
         phase_text.strip_prefix("狀態：").unwrap_or(&phase_text)
     );
     let _ = handles.tray.set_tooltip(Some(&tooltip));
@@ -1048,6 +1048,8 @@ pub fn run() {
     let live_poller_for_status = Arc::clone(&live_poller);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(lcu_manager)
         .manage(shared_config)
         .manage(shared_account)
