@@ -13,9 +13,17 @@
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml
 pnpm tsc --noEmit && pnpm build
+pnpm test        # vitest：前端純邏輯（目前為二選一配對）
 ```
 
 動到前端或 Rust 共用模組時兩組都跑；只動 `mockups/` 時至少做一次受影響頁面的 smoke test。
+
+### GUI 實測（CDP）收尾
+
+- 為驗證啟動的程序（App 實例、headless 瀏覽器、`pnpm dev`）都記下 PID；回報前逐一結束，再用 `Get-Process -Id <PID>` 確認已不在。使用者自己開的 App 一律不碰。
+- 隔離實例：設 `APPDATA` 與 `WEBVIEW2_USER_DATA_FOLDER` 到暫存資料夾，`--remote-debugging-port` 用沒被佔的 port（先查 `/json`）。改 `LOCALAPPDATA` 會讓 WebView2 建立失敗（`0x8007139F`）。
+- 使用者的 App 常跑在 `src-tauri\target\debug\tauri-app.exe`，建置測試版時用另一個 `CARGO_TARGET_DIR`，避免覆寫正在執行的 exe。
+- 使用者開著 `pnpm tauri dev` 時，存檔改到 Rust 就會自動重編、用真實 `%APPDATA%` 資料重啟 App。改到設定格式或資料遷移之前，先請使用者關掉 dev App。
 
 ## 慣例
 
