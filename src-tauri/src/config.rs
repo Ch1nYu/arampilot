@@ -849,9 +849,53 @@ fn fnv1a(text: &str) -> u32 {
 /// How many snapshots are kept per account prefix; older ones rotate out.
 pub const KEEP_CONFIG_BACKUPS: usize = 20;
 
+/// Folder name inside `%APPDATA%` that holds `config.json`, `backups/` and the logs.
+const DATA_DIR_NAME: &str = "ARAMPilot";
+/// Folder name used before the rename; moved to `DATA_DIR_NAME` once on startup.
+const LEGACY_DATA_DIR_NAME: &str = "lol-aram-assistant";
+
 /// Root data directory shared by every config file and the `backups/` folder.
 pub fn app_data_dir() -> PathBuf {
     dirs_fallback()
+}
+
+/// Picks the data folder to use: the new name when it exists, else the legacy
+/// name (the run after a failed rename keeps using it), else the new name.
+pub fn resolve_data_dir(app_data: &Path) -> PathBuf {
+    let new_dir = app_data.join(DATA_DIR_NAME);
+    if new_dir.exists() {
+        return new_dir;
+    }
+    let legacy_dir = app_data.join(LEGACY_DATA_DIR_NAME);
+    if legacy_dir.exists() {
+        return legacy_dir;
+    }
+    new_dir
+}
+
+/// Outcome of the one-time data folder rename.
+#[derive(Debug, PartialEq)]
+pub enum DataDirMigration {
+    /// Nothing to do: the new folder exists, or there is no legacy folder.
+    NotNeeded,
+    /// The legacy folder is now the new folder.
+    Moved,
+    /// The rename failed; every file stays where it was and it is retried.
+    Failed(String),
+}
+
+/// Renames the legacy data folder to the new name once. A rename is atomic, so
+/// a failure leaves the data in the legacy folder instead of splitting it.
+pub fn migrate_data_dir(app_data: &Path) -> DataDirMigration {
+    let new_dir = app_data.join(DATA_DIR_NAME);
+    let legacy_dir = app_data.join(LEGACY_DATA_DIR_NAME);
+    if new_dir.exists() || !legacy_dir.is_dir() {
+        return DataDirMigration::NotNeeded;
+    }
+    match fs::rename(&legacy_dir, &new_dir) {
+        Ok(()) => DataDirMigration::Moved,
+        Err(error) => DataDirMigration::Failed(error.to_string()),
+    }
 }
 
 /// Prefix used in backup file names: the first 8 chars of the puuid, or `default`.
@@ -1062,7 +1106,17 @@ fn reg_command() -> std::process::Command {
 /// Returns whether the Run key now matches `enabled`, as far as reg.exe tells.
 fn apply_windows_auto_start(enabled: bool) -> bool {
     const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    const VALUE_NAME: &str = "LoLAramAssistant";
+    const VALUE_NAME: &str = "ARAMPilot";
+    const LEGACY_VALUE_NAME: &str = "LoLAramAssistant";
+
+    // Drop the pre-rename value on every call so the old name cannot launch a
+    // second copy; a missing value is expected and ignored.
+    let mut cleanup = reg_command();
+    cleanup
+        .args(["delete", RUN_KEY, "/v", LEGACY_VALUE_NAME, "/f"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _ = cleanup.status();
 
     let mut command = reg_command();
     if enabled {
@@ -1104,7 +1158,7 @@ pub fn sync_windows_auto_start(_enabled: bool) {}
 
 fn dirs_fallback() -> PathBuf {
     if let Some(app_data) = std::env::var_os("APPDATA") {
-        PathBuf::from(app_data).join("lol-aram-assistant")
+        resolve_data_dir(&PathBuf::from(app_data))
     } else {
         PathBuf::from("config")
     }
@@ -1625,6 +1679,76 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn test_migrate_data_dir_moves_legacy_folder_once() {
+        let dir = temp_case("migrate_move");
+        let legacy = dir.join(LEGACY_DATA_DIR_NAME);
+        fs::create_dir_all(legacy.join("backups")).unwrap();
+        fs::write(legacy.join("config.json"), "{\"accent_color\":\"ivory\"}").unwrap();
+        fs::write(legacy.join("backups").join("x.json"), "snapshot").unwrap();
+
+        assert_eq!(migrate_data_dir(&dir), DataDirMigration::Moved);
+
+        let new_dir = dir.join(DATA_DIR_NAME);
+        assert_eq!(
+            fs::read_to_string(new_dir.join("config.json")).unwrap(),
+            "{\"accent_color\":\"ivory\"}"
+        );
+        assert_eq!(
+            fs::read_to_string(new_dir.join("backups").join("x.json")).unwrap(),
+            "snapshot"
+        );
+        assert!(!legacy.exists(), "the legacy folder is gone after the rename");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_migrate_data_dir_keeps_both_folders_when_new_exists() {
+        let dir = temp_case("migrate_both");
+        let legacy = dir.join(LEGACY_DATA_DIR_NAME);
+        let new_dir = dir.join(DATA_DIR_NAME);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+        fs::write(legacy.join("config.json"), "legacy").unwrap();
+
+        assert_eq!(migrate_data_dir(&dir), DataDirMigration::NotNeeded);
+        assert_eq!(
+            fs::read_to_string(legacy.join("config.json")).unwrap(),
+            "legacy"
+        );
+        assert!(new_dir.is_dir());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_migrate_data_dir_creates_nothing_without_folders() {
+        let dir = temp_case("migrate_none");
+
+        assert_eq!(migrate_data_dir(&dir), DataDirMigration::NotNeeded);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "nothing is created");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_resolve_data_dir_prefers_new_then_legacy_then_new() {
+        let dir = temp_case("resolve_dir");
+        let legacy = dir.join(LEGACY_DATA_DIR_NAME);
+        let new_dir = dir.join(DATA_DIR_NAME);
+
+        assert_eq!(resolve_data_dir(&dir), new_dir, "neither: the new name");
+        fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(
+            resolve_data_dir(&dir),
+            legacy,
+            "legacy only: keep using it after a failed rename"
+        );
+        fs::create_dir_all(&new_dir).unwrap();
+        assert_eq!(resolve_data_dir(&dir), new_dir, "both: the new name wins");
+        fs::remove_dir_all(&legacy).unwrap();
+        assert_eq!(resolve_data_dir(&dir), new_dir, "new only: the new name");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

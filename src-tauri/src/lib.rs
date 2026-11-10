@@ -1001,6 +1001,20 @@ fn build_tray(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // One-time: move the pre-rename data folder to its new name before anything
+    // reads it, so the single-instance ports come from the final folder. A
+    // failed rename keeps the legacy folder in use and is retried next start.
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        match config::migrate_data_dir(&std::path::PathBuf::from(app_data)) {
+            config::DataDirMigration::Moved => {
+                eprintln!("data migration: renamed the legacy data folder to ARAMPilot")
+            }
+            config::DataDirMigration::Failed(error) => {
+                eprintln!("data migration: could not rename the legacy data folder: {error}")
+            }
+            config::DataDirMigration::NotNeeded => {}
+        }
+    }
     // One instance per data directory: a second launch shows the first window and exits.
     let instance = single_instance::acquire(&single_instance::ports_for(&config::app_data_dir()));
     if matches!(instance, single_instance::Instance::AlreadyRunning) {

@@ -5,7 +5,7 @@
 ## 硬性邊界
 
 - 禁止任何遊戲內輸入模擬（虛擬按鍵或滑鼠）；自動化一律走本地 LCU API 與 `https://127.0.0.1:2999`。這是 Vanguard 紅線。
-- `%APPDATA%/lol-aram-assistant/config.json` 是使用者的真實設定。任何寫入 profile 的路徑都必須保留每個英雄的 `elo` / `matches` 欄位，否則會清掉大比拚的累積權重。
+- `%APPDATA%/ARAMPilot/config.json` 是使用者的真實設定（舊名 `lol-aram-assistant`，啟動時自動改名）。任何寫入 profile 的路徑都必須保留每個英雄的 `elo` / `matches` 欄位，否則會清掉大比拚的累積權重。
 - lab 工作資料（`sorting-autosave.json`、`aram-assistant-sorted-*.json`、`aram-assistant-backup.json`）不提交進 git；它們在 `.gitignore` 內，只留在磁碟上。
 
 ## 驗證（宣稱完成前必跑）

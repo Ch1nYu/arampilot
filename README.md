@@ -78,7 +78,7 @@
 
 ## 資料存在哪裡
 
-全部在 `%APPDATA%\lol-aram-assistant\`，只存在這台電腦：
+全部在 `%APPDATA%\ARAMPilot\`，只存在這台電腦：
 
 | 檔案 | 內容 |
 |---|---|
