@@ -1,6 +1,6 @@
-# lolafk 專案 — Agent 指引
+# ARAMPilot — Agent 指引
 
-動工前先讀 `HANDOVER.md`，它是本專案唯一的進度與脈絡來源（架構、里程碑、資料流、排序工作台流程、目前狀態、下一步）。收工前把你的進展更新回去。
+架構與功能見 `README.md`。私人開發 repo 另有 `HANDOVER.md`（進度與脈絡紀錄，不進公開 repo）：有的話動工前先讀，收工前更新回去。
 
 ## 硬性邊界
 
@@ -13,7 +13,7 @@
 ```powershell
 cargo test --manifest-path src-tauri/Cargo.toml
 pnpm tsc --noEmit && pnpm build
-pnpm test        # vitest：前端純邏輯（目前為二選一配對）
+pnpm test        # vitest：前端純邏輯
 ```
 
 動到前端或 Rust 共用模組時兩組都跑；只動 `mockups/` 時至少做一次受影響頁面的 smoke test。
@@ -28,4 +28,4 @@ pnpm test        # vitest：前端純邏輯（目前為二選一配對）
 ## 慣例
 
 - Commit 用 Conventional Commits（`feat:` / `fix:` / `docs:` / `chore:`），一個里程碑一個 commit。
-- 前端與 Rust 的設定欄位變更要同步更新 `HANDOVER.md` 的資料流段落。
+- 前端與 Rust 的設定欄位要一起改；有 `HANDOVER.md` 時同步更新它的資料流段落。
