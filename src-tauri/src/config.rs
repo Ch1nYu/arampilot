@@ -157,7 +157,7 @@ impl Default for ModeSettings {
 #[serde(default)]
 pub struct AppConfig {
     pub master_enabled: bool,
-    pub accent_color: String, // "crimson", "amber", "emerald", "violet"
+    pub accent_color: String, // "ivory", "crimson", "amber", "emerald", "violet"
 
     // Summoner spells
     pub auto_summoner_spells: bool,
@@ -232,7 +232,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             master_enabled: true,
-            accent_color: "crimson".to_string(),
+            accent_color: "ivory".to_string(),
             auto_summoner_spells: true,
             primary_spell_key: "D".to_string(),
             auto_accept: true,
@@ -1131,7 +1131,7 @@ mod tests {
     fn test_app_config_default_values() {
         let cfg = AppConfig::default();
         assert!(cfg.master_enabled);
-        assert_eq!(cfg.accent_color, "crimson");
+        assert_eq!(cfg.accent_color, "ivory");
         assert!(cfg.auto_accept);
         assert_eq!(cfg.accept_delay_sec, 2.0);
         assert_eq!(cfg.accept_notify, "sound");
@@ -1385,7 +1385,7 @@ mod tests {
 
         // File does not exist yet -> should return default
         let loaded_default = cm.load();
-        assert_eq!(loaded_default.accent_color, "crimson");
+        assert_eq!(loaded_default.accent_color, "ivory");
         assert!(config_file.exists());
 
         // Modify and save
@@ -1620,7 +1620,7 @@ mod tests {
         let path = dir.join("config.json");
         fs::write(&path, "{\"aram_profile\": [ {\"id\": 1, ").unwrap();
         let cfg = ConfigManager::at(dir.clone()).load();
-        assert_eq!(cfg.accent_color, "crimson", "falls back to defaults");
+        assert_eq!(cfg.accent_color, "ivory", "falls back to defaults");
         let aside: Vec<String> = fs::read_dir(&dir)
             .unwrap()
             .flatten()

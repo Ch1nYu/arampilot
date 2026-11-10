@@ -586,13 +586,14 @@ document.getElementById("acceptModes")?.addEventListener("click", () => {
 
 /* ---------- Accent Themes ---------- */
 const ACCENTS: Record<string, { accent: string; ink: string }> = {
+  ivory: { accent: "#EDE8DF", ink: "#141416" },
   crimson: { accent: "#EF4444", ink: "#FFFFFF" },
   amber: { accent: "#E5A93C", ink: "#0E0E11" },
   emerald: { accent: "#34D399", ink: "#061C14" },
   violet: { accent: "#C084FC", ink: "#160826" },
 };
 function setAccent(a: string) {
-  const cfg = ACCENTS[a] || ACCENTS.crimson;
+  const cfg = ACCENTS[a] || ACCENTS.ivory;
   document.documentElement.style.setProperty("--accent", cfg.accent);
   document.documentElement.style.setProperty("--accent-ink", cfg.ink);
   document.documentElement.style.setProperty("--accent2", cfg.accent);
@@ -603,12 +604,12 @@ function setAccent(a: string) {
 }
 document.querySelectorAll("#accentPicker button").forEach((b) =>
   b.addEventListener("click", () => {
-    const chosen = (b as HTMLElement).dataset.accent || "crimson";
+    const chosen = (b as HTMLElement).dataset.accent || "ivory";
     setAccent(chosen);
     debouncedSaveConfig();
   })
 );
-setAccent(localStorage.getItem("app-accent") || "crimson");
+setAccent(localStorage.getItem("app-accent") || "ivory");
 
 /* ---------- Log Engine ---------- */
 interface LogRow {
@@ -2438,7 +2439,7 @@ function collectConfig(): AppConfig {
 
   return {
     master_enabled: checkboxValue("master", true),
-    accent_color: localStorage.getItem("app-accent") || "crimson",
+    accent_color: localStorage.getItem("app-accent") || "ivory",
     auto_summoner_spells: checkboxValue("cfgAutoSpells", true),
     primary_spell_key: primarySpellKeyFromUI(),
     auto_accept: checkboxValue("cfgAutoAccept", true),
