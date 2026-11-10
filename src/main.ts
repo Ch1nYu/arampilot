@@ -629,9 +629,10 @@ document.getElementById("acceptModes")?.addEventListener("click", () => {
 });
 
 /* ---------- Accent Themes ---------- */
-const ACCENTS: Record<string, { accent: string; ink: string }> = {
+// ink: text on an accent background. text: accent-colored text on an accent-tinted background.
+const ACCENTS: Record<string, { accent: string; ink: string; text?: string }> = {
   ivory: { accent: "#EDE8DF", ink: "#141416" },
-  crimson: { accent: "#EF4444", ink: "#FFFFFF" },
+  crimson: { accent: "#EF4444", ink: "#141416", text: "#F87171" },
   amber: { accent: "#E5A93C", ink: "#0E0E11" },
   emerald: { accent: "#34D399", ink: "#061C14" },
   violet: { accent: "#C084FC", ink: "#160826" },
@@ -641,6 +642,7 @@ function setAccent(a: string) {
   document.documentElement.style.setProperty("--accent", cfg.accent);
   document.documentElement.style.setProperty("--accent-ink", cfg.ink);
   document.documentElement.style.setProperty("--accent2", cfg.accent);
+  document.documentElement.style.setProperty("--accent-text", cfg.text ?? cfg.accent);
   document.querySelectorAll("#accentPicker button").forEach((b) =>
     b.classList.toggle("on", (b as HTMLElement).dataset.accent === a)
   );

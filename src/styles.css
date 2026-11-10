@@ -13,6 +13,7 @@
   --accent: #EDE8DF;
   --accent-ink: #141416;
   --accent2: #EDE8DF;
+  --accent-text: #EDE8DF; /* accent used as text on accent-tinted backgrounds */
   --ok: #34D399;
   --warn: #E5A93C;
   --info: #60A5FA;
@@ -227,7 +228,7 @@ a.go:hover { text-decoration: underline; }
 .note b { color: var(--text); font-weight: 500; }
 .tabs { display: inline-flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 3px; margin-bottom: 14px; }
 .tabs span { font-size: 12px; padding: 6px 16px; border-radius: 6px; color: var(--muted); cursor: pointer; user-select: none; transition: all .15s; }
-.tabs span.on { background: var(--accent); color: #fff; font-weight: 600; }
+.tabs span.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .hero-tabs-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .hero-tabs-row .tabs { margin-bottom: 0; }
 .hero-tabs-label { margin-left: 8px; font-size: 12px; color: var(--muted); }
@@ -278,7 +279,7 @@ a.go:hover { text-decoration: underline; }
 .spell { display: flex; align-items: center; gap: 7px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 6px 6px; font: inherit; font-size: 13px; color: inherit; }
 button.spell { cursor: pointer; transition: border-color .15s, color .15s; }
 button.spell:hover { border-color: var(--accent); color: var(--accent); }
-.spell.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.spell.on { border-color: var(--accent); color: var(--accent-text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .spell.more { padding: 6px 12px; color: var(--muted); font-size: 14px; line-height: 26px; }
 .spell.more.on { padding: 6px 12px 6px 6px; line-height: normal; }
 .spell img { width: 26px; height: 26px; border-radius: 6px; }
@@ -317,7 +318,7 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .spell-picker { position: relative; display: flex; align-items: center; gap: 6px; flex: none; }
 .spell-btn { display: inline-flex; align-items: center; gap: 5px; background: var(--panel2); border: 1px solid var(--line2); color: var(--muted); border-radius: 7px; padding: 4px 8px 4px 4px; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; transition: border-color .15s, color .15s; }
 .spell-btn:hover { border-color: var(--accent); }
-.spell-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.spell-btn.on { border-color: var(--accent); color: var(--accent-text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .spell-btn .spell-ic, .spell-btn .ph { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; flex: none; display: block; }
 .spell-tray { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: none; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--line2); border-radius: var(--radius); box-shadow: 0 10px 24px rgba(0, 0, 0, .45); }
 .spell-tray.open { display: flex; }
