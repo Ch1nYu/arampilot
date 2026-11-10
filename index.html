@@ -2,6 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
+  <link rel="icon" href="data:,">
   <title>ARAM ASSISTANT</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -68,10 +69,22 @@
         <div class="page-head"><h1>自動化</h1></div>
 
         <div class="card">
-          <div class="set-row" style="padding-top:2px">
-            <span class="set-lab">接受時提醒</span>
-            <span class="seg" data-seg id="cfgAcceptNotify"><button data-v="mute">靜音</button><button class="on" data-v="sound">提示音</button><button data-v="notification">系統通知</button></span>
+          <div class="card-head"><h3>自動接受對戰</h3><label class="sw"><input type="checkbox" checked data-gate="g-accept" id="cfgAutoAccept"><i></i></label></div>
+          <div class="rows" id="g-accept">
+            <div class="set-row">
+              <span class="set-lab">延遲秒數</span>
+              <span class="sliderbox"><input type="range" min="0" max="8" step="0.1" value="2" data-suffix=" 秒" id="cfgAcceptDelay"><span class="val"></span></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">生效模式</span>
+              <span class="chk" data-chk id="acceptModes"><button class="on" data-v="ARAM">ARAM</button><button class="on" data-v="Mayhem">Mayhem</button><button data-v="其他">其他</button></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">接受時提醒</span>
+              <span class="seg" data-seg id="cfgAcceptNotify"><button data-v="mute">靜音</button><button class="on" data-v="sound">提示音</button><button data-v="notification">系統通知</button></span>
+            </div>
           </div>
+          <div class="hint">配對成功時自動發送接受；其他模式出現配對時不自動接受</div>
         </div>
 
         <div class="card">
@@ -83,7 +96,7 @@
             </div>
             <div class="set-row">
               <span class="set-lab">等待秒數</span>
-              <span class="sliderbox"><input type="range" min="0" max="12" value="3" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></span>
+              <span class="sliderbox"><input type="range" min="0" max="12" step="0.1" value="3" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></span>
             </div>
           </div>
           <div class="hint">手動點選後不會被覆蓋</div>
@@ -104,8 +117,17 @@
               <span class="set-lab">停止搶角的倒數秒數</span>
               <span class="sliderbox"><input type="range" min="0" max="15" value="5" data-suffix=" 秒" id="cfgStopBenchTime"><span class="val"></span></span>
             </div>
+            <div class="set-row">
+              <span class="set-lab">解鎖後重試間隔</span>
+              <span class="sliderbox"><input type="range" min="50" max="500" step="10" value="80" data-suffix=" ms" id="cfgBenchRetryMs"><span class="val"></span></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">手動搶角間隔</span>
+              <span class="sliderbox"><input type="range" min="80" max="500" step="10" value="120" data-suffix=" ms" id="cfgManualSnipeMs"><span class="val"></span></span>
+            </div>
           </div>
           <div class="hint">板凳解鎖後比對分數，3 秒冷卻</div>
+          <div class="hint">間隔越短越快，但太短可能被客戶端拒絕；預設 80 / 120 ms</div>
         </div>
 
         <div class="card">
@@ -132,11 +154,11 @@
           <div class="rows" id="g-chat">
             <div class="set-row">
               <span class="set-lab">發送時機</span>
-              <span class="seg" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></span>
+              <span class="chk" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></span>
             </div>
             <div class="set-row">
               <span class="set-lab">發送延遲</span>
-              <span class="sliderbox"><input type="range" min="0" max="5" step="0.5" value="1" data-suffix=" 秒" id="cfgChatDelay"><span class="val"></span></span>
+              <span class="sliderbox"><input type="range" min="0" max="5" step="0.1" value="1" data-suffix=" 秒" id="cfgChatDelay"><span class="val"></span></span>
             </div>
             <div class="row"><div class="label"><b>自訂語句</b><span>多筆時隨機送一則；支援 {old} {new}</span></div><div class="msgs" id="msgs"></div></div>
             <div class="addrow"><input class="input" id="msgIn" placeholder="輸入訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入</button></div>
@@ -152,8 +174,12 @@
               <input class="input" value="08:00" style="width:84px;text-align:center" id="cfgFfTime">
             </div>
             <div class="set-row">
+              <span class="set-lab">提早提醒</span>
+              <span class="sliderbox"><input type="range" min="0" max="15" step="0.5" value="0" data-suffix=" 秒" data-zero="準時" id="cfgFfLead"><span class="val"></span></span>
+            </div>
+            <div class="set-row">
               <span class="set-lab">提醒方式</span>
-              <span class="seg" data-chk id="cfgFfMethods"><button data-v="clipboard">複製 /ff</button><button class="on" data-v="sound">提示音</button><button class="on" data-v="notification">桌面通知</button></span>
+              <span class="chk" data-chk id="cfgFfMethods"><button data-v="clipboard">複製 /ff</button><button class="on" data-v="sound">提示音</button><button class="on" data-v="notification">桌面通知</button></span>
             </div>
             <div class="set-row">
               <span class="set-lab">投票未過冷卻提醒</span>
@@ -176,17 +202,33 @@
 
       <!-- 英雄 -->
       <section class="page" id="p-hero">
-        <div class="page-head"><h1>英雄</h1></div>
-        <div class="tabs" id="heroTabs">
-          <span class="on" data-hero-tab="priority">優先序</span>
-          <span data-hero-tab="battle">二選一大比拚</span>
+        <div class="page-head"><h1>英雄</h1>
+          <div class="rank-save-bar">
+            <span class="hero-tabs-label">排序存檔：</span>
+            <select class="input" id="rankSaveSelect" title="切換排序存檔；按「儲存」才會把畫面上的排序寫進選中的這份"></select>
+            <span id="rankSaveStatus" class="rank-save-status" hidden>未儲存</span>
+            <button class="btn" id="btnRankSaveSave" title="把畫面上目前的排序、標記與二選一權重存進這份存檔">儲存</button>
+            <button class="btn" id="btnRankSaveRevert" title="捨棄未儲存的修改，回到這份存檔上次儲存的內容" hidden>還原</button>
+            <button class="btn" id="btnRankSaveNew" title="用畫面上目前的排序開一份新的存檔並切過去，原本這份維持上次儲存的內容">複製一份</button>
+            <button class="btn" id="btnRankSaveRename">改名</button>
+            <button class="btn" id="btnRankSaveDelete">刪除</button>
+          </div>
+        </div>
+        <div class="hero-tabs-row">
+          <div class="tabs" id="heroTabs">
+            <span class="on" data-hero-tab="priority">優先序</span>
+          </div>
+          <span class="hero-tabs-label">分類方法：</span>
+          <div class="tabs" id="heroMethodTabs">
+            <span data-hero-tab="flash">閃卡五分類</span>
+            <span data-hero-tab="pk">階層內二選一</span>
+          </div>
         </div>
 
         <div id="tab-priority">
           <div class="toolbar">
             <input class="input" id="search" placeholder="搜尋英雄中文名稱…" style="width:170px">
             <button class="btn primary" id="btnImportMastery" title="讀取目前登入的 LoL 帳號專精分數，自動分配初始階層與順位">⚡ 帳號專精自動初排</button>
-            <button class="btn" id="btnGotoBattle">快速分類 / 二選一</button>
             <button class="btn" id="btnSortUnranked">未分類排序</button>
             <button class="btn" id="btnResetTiers" title="將目前模式的所有英雄重置回未分類">重置</button>
             <div class="legend"><span>🔒 不換出</span><span>🎁 隨時可換</span><span>⛔ 不搶</span></div>
@@ -195,13 +237,6 @@
         </div>
 
         <div id="tab-battle" style="display:none">
-          <div class="bt-top" style="margin-bottom:12px">
-            <div class="seg" id="btStageSeg">
-              <button class="on" data-stage="flash">① 閃卡五分類</button>
-              <button data-stage="pk">② 階層內二選一</button>
-            </div>
-          </div>
-
           <div id="btFlashWrap">
             <div class="card">
               <div class="bt-top" style="margin-bottom:12px">
@@ -211,12 +246,11 @@
                 </div>
                 <span class="card-desc" style="margin:0" id="flashProgressText">準備中...</span>
                 <div class="progress"><i id="flashProgressBar"></i></div>
-                <button class="btn" id="btnFlashImportMastery" title="直接從 LoL 客戶端讀取你的帳號英雄專精自動初排">⚡ 帳號專精自動初排</button>
               </div>
 
               <div class="flash-stage">
                 <div class="flash-card" id="flashCard" draggable="true"></div>
-                <div class="flash-buckets" id="flashBuckets">
+                <div class="flash-buckets" id="flashBuckets" title="按數字鍵 1～5、點分類框，或把上方英雄卡拖進分類框；每一隻分類完會立即自動儲存">
                   <button class="flash-bucket" data-tier="本命"><span class="k">鍵盤 1</span><b>本命</b><small>90–100 分</small></button>
                   <button class="flash-bucket" data-tier="愛角"><span class="k">鍵盤 2</span><b>愛角</b><small>75–89 分</small></button>
                   <button class="flash-bucket" data-tier="順手"><span class="k">鍵盤 3</span><b>順手</b><small>60–74 分</small></button>
@@ -228,10 +262,9 @@
               <div class="bt-actions" style="margin-top:12px">
                 <button class="btn" id="flashUndo">復原上一隻 <span class="var">Backspace</span></button>
                 <button class="btn" id="flashSkip">跳過這隻 <span class="var">Space</span></button>
-                <button class="btn primary" id="flashGoPk">前往 ② 階層內二選一精排 →</button>
+                <button class="btn primary" id="flashGoPk">前往階層內二選一精排 →</button>
               </div>
             </div>
-            <div class="note">提示：可直接按鍵盤數字鍵 <b>1 ～ 5</b>、<b>點擊下方五個分類按鈕</b>，或將<b>上方英雄卡直接拖曳到分類框</b>。每一隻分類完會立即自動儲存。</div>
           </div>
 
           <div id="btPkWrap" style="display:none">
@@ -248,7 +281,12 @@
             </div>
             <div class="bt-wrap">
               <div class="card">
-                <div class="bt-top"><span class="card-desc" style="margin:0" id="btRound">第 1 回合</span><div class="progress"><i id="btBar"></i></div></div>
+                <div class="bt-banner" id="btDraftBanner" style="display:none">
+                  <span id="btDraftBannerText">上次有 0 票未套用</span>
+                  <button class="btn" id="btDraftResume">繼續</button>
+                  <button class="btn" id="btDraftDrop">放棄</button>
+                </div>
+                <div class="bt-top"><span class="card-desc" style="margin:0" id="btRound">本輪已比 0 場</span><div class="progress"><i id="btBar"></i></div></div>
                 <div class="vs">
                   <div class="fighter" id="fL"></div>
                   <div class="vs-mid">VS</div>
@@ -259,15 +297,29 @@
                   <button class="btn" id="btTie">都很愛 <span class="var">↑</span></button>
                   <button class="btn" id="btSkip">跳過 <span class="var">Space</span></button>
                   <button class="btn" id="btDown">都不想玩 <span class="var">↓</span></button>
-                  <button class="btn primary" id="btApply">查看優先序結果 →</button>
+                  <button class="btn" id="btDiscard" disabled>放棄本輪</button>
+                  <button class="btn primary" id="btApply" disabled title="投票只會記在本輪草稿，不會改動你的優先序與權重。按「套用到優先序」會先顯示變動並自動備份，確認後才寫入；「放棄本輪」會丟掉草稿；套用後可用「復原上次套用」還原。系統會輪流抽最久沒出場的英雄，同一組不會重複。">套用到優先序…</button>
+                  <button class="btn" id="btRevertApply" style="display:none">復原上次套用</button>
+                </div>
+                <div class="bt-inline-confirm" id="btDiscardConfirm" style="display:none">
+                  <span>確定丟掉本輪 <b id="btDiscardCount">0</b> 票草稿？優先序與權重不會變動。</span>
+                  <button class="btn" id="btDiscardYes">確定放棄</button>
+                  <button class="btn" id="btDiscardNo">取消</button>
                 </div>
               </div>
               <div class="card">
-                <div class="card-title">目前範圍即時排名</div>
+                <div class="card-title">權重排名（含本輪草稿）</div>
                 <ol class="rank" id="rank" style="margin-top:8px"></ol>
               </div>
             </div>
-            <div class="note">系統會<b>優先抽出場次數最少</b>的英雄配對，確保範圍內的每一隻英雄都均勻出場、不再無限重複固定角色。按「套用順位至優先序」即可將比較後的先後順序寫入該階層。</div>
+            <div class="card bt-preview" id="btPreview" style="display:none">
+              <div class="card-title">套用預覽</div>
+              <div id="btPreviewBody"></div>
+              <div class="bt-actions" style="margin-top:12px">
+                <button class="btn primary" id="btPreviewConfirm">確認套用</button>
+                <button class="btn" id="btPreviewCancel">取消</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -336,12 +388,13 @@
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>開發</h3></div>
+          <div class="card-head"><h3>自訂房測試</h3></div>
+          <div class="card-desc">用 1 人自訂大亂鬥試跑選角自動化，不會進入遊戲。只在自訂房有效：在一般大廳或正式對戰的選角中按下會被拒絕。</div>
           <div class="set-row" style="padding-top:2px">
-            <span class="set-lab">測試用操作</span>
+            <span class="set-lab">試跑選角</span>
             <div style="display:flex;gap:6px">
-              <button class="btn" id="btnDevStartTest" title="建立/啟動 1 人自訂大亂鬥選角測試">▶ 測選角</button>
-              <button class="btn" id="btnDevQuitTest" title="立即退出自訂房選角（不進遊戲）">⏹ 退房</button>
+              <button class="btn" id="btnDevStartTest" title="建立 1 人自訂大亂鬥並開始選角">▶ 開始</button>
+              <button class="btn" id="btnDevQuitTest" title="退出自訂房的選角，回到自訂大廳（不進遊戲）">⏹ 退出選角</button>
             </div>
           </div>
         </div>

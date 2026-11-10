@@ -1,6 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BUILTIN_CHAMPIONS } from "./champions";
+import { createPairMemory, pickPair } from "./pkPairing";
+import { validateImportedConfig } from "./importValidation";
+import { classifySaveError, type SaveResult } from "./saveResult";
+import {
+  captureLive,
+  isDirty,
+  MAX_RANKING_SAVES,
+  newSaveId,
+  nextSaveName,
+  normalizeSaves,
+  restoreSave,
+  type RankingSave,
+  type RankingSaveItem,
+} from "./rankingSaves";
 
 interface ChampionItem {
   id: number;
@@ -99,11 +113,23 @@ interface AppConfig {
   ff_copy_clipboard: boolean;
   ff_play_sound: boolean;
   ff_desktop_notify: boolean;
+  ff_lead_sec: number;
+  bench_retry_interval_ms: number;
+  manual_snipe_interval_ms: number;
   client_close_action: string; // "wait", "exit"
   close_to_tray: boolean;
   auto_start: boolean;
   aram_profile: ProfileItemConfig[];
   mayhem_profile: ProfileItemConfig[];
+  ranking_saves: RankingSaveConfig[];
+  active_ranking_save: string;
+}
+
+/** One named ranking save as the config file stores it (active save: `items` empty). */
+interface RankingSaveConfig {
+  id: string;
+  name: string;
+  items: ProfileItemConfig[];
 }
 
 const ICON = (id: number) =>
@@ -211,10 +237,6 @@ function go(p: string) {
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("on", (n as HTMLElement).dataset.go === p));
   const c = document.querySelector(".content");
   if (c) c.scrollTop = 0;
-  if (p === "battle") {
-    syncFlashPool();
-    syncBattlePool();
-  }
 }
 document.addEventListener("click", (e) => {
   const g = (e.target as HTMLElement).closest("[data-go]") as HTMLElement | null;
@@ -243,6 +265,13 @@ document.querySelectorAll("[data-chk]").forEach((c) =>
     }
   })
 );
+// Sliders may use fractional steps (0.1); trim float noise and trailing zeros.
+function formatRangeLabel(input: HTMLInputElement): string {
+  const raw = Number(input.value);
+  const shown = Number.isFinite(raw) ? String(Math.round(raw * 10) / 10) : input.value;
+  if (input.dataset.zero && Number(shown) === 0) return input.dataset.zero;
+  return (input.dataset.prefix || "") + shown + (input.dataset.suffix || "");
+}
 document.querySelectorAll("input[type=range]").forEach((r) => {
   const input = r as HTMLInputElement;
   const numBuddy =
@@ -263,10 +292,7 @@ document.querySelectorAll("input[type=range]").forEach((r) => {
       numBuddy.value = input.value;
     }
     if (!out) return;
-    out.textContent =
-      input.dataset.zero && +input.value === 0
-        ? input.dataset.zero
-        : (input.dataset.prefix || "") + input.value + (input.dataset.suffix || "");
+    out.textContent = formatRangeLabel(input);
   };
   input.addEventListener("input", () => {
     upd();
@@ -280,12 +306,7 @@ document.querySelectorAll("input[type=range]").forEach((r) => {
       if (Number.isFinite(raw)) {
         const clamped = Math.max(min, Math.min(max, Math.round(raw)));
         input.value = String(clamped);
-        if (out) {
-          out.textContent =
-            input.dataset.zero && clamped === 0
-              ? input.dataset.zero
-              : (input.dataset.prefix || "") + clamped + (input.dataset.suffix || "");
-        }
+        if (out) out.textContent = formatRangeLabel(input);
         input.dispatchEvent(new Event("change"));
         debouncedSaveConfig();
       }
@@ -599,11 +620,13 @@ interface LogRow {
 const logHistory: LogRow[] = [];
 let logFilter: "all" | LogRow["kind"] = "all";
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 function addLog(kind: "act" | "skip" | "sys" | "err", title: string, reason: string) {
   const now = new Date();
-  const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(
-    now.getSeconds()
-  ).padStart(2, "0")}`;
+  const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
   logHistory.unshift({ time, kind, title, reason });
   if (logHistory.length > 80) logHistory.pop();
   renderLogs();
@@ -616,13 +639,15 @@ function renderLogs() {
       <span class="tag ${r.kind}">${{ act: "執行", skip: "略過", sys: "系統", err: "錯誤" }[r.kind]}</span>
       <div>${escapeHtml(r.title)}<span class="reason">${escapeHtml(r.reason)}</span></div>
     </div>`;
-  const elShort = document.getElementById("logShort");
-  if (elShort) {
-    const last = logHistory[0];
-    elShort.innerHTML = last
-      ? `<span class="t">${last.time}</span><span class="x">${escapeHtml(last.title)}</span><span class="r">${escapeHtml(last.reason)}</span>`
-      : `<span class="x" style="color:var(--dim)">尚無紀錄</span>`;
-  }
+  // Overview one-line summary: separate time/text/reason slots in index.html.
+  const last = logHistory[0];
+  const setText = (id: string, text: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setText("logShortTime", last ? last.time : "");
+  setText("logShortText", last ? last.title : "尚無紀錄");
+  setText("logShortReason", last ? last.reason : "");
   const elFull = document.getElementById("logFull");
   if (elFull) {
     const rows = logFilter === "all" ? logHistory : logHistory.filter((r) => r.kind === logFilter);
@@ -689,6 +714,7 @@ const TIERS: [string, number | null, number | null][] = [
   ["封印", 39, 10],
   ["未分類", null, null],
 ];
+const TIER_NAMES = TIERS.map(([t]) => t);
 const FLAGS = ["", "lock", "give", "nograb"];
 const FLAG_ICON: Record<string, string> = { lock: "🔒", give: "🎁", nograb: "⛔" };
 const FLAG_NAME: Record<string, string> = { lock: "不換出", give: "隨時可換", nograb: "不搶" };
@@ -754,7 +780,8 @@ tiersContainer?.addEventListener("dragend", () => {
 });
 tiersContainer?.addEventListener("dragover", (e) => {
   const dropZone = (e.target as HTMLElement).closest(".tier-drop") as HTMLElement | null;
-  if (!dropZone) return;
+  // Only our own chip drags are droppable; stray text / file drags are ignored.
+  if (!dropZone || dragId == null) return;
   e.preventDefault();
   tiersContainer.querySelectorAll(".over").forEach((x) => x !== dropZone && x.classList.remove("over"));
   dropZone.classList.add("over");
@@ -785,6 +812,8 @@ tiersContainer?.addEventListener("drop", (e) => {
   }
 
   list.splice(insertIdx, 0, targetItem);
+  // renderTiers() detaches the dragged chip, so its dragend never reaches us.
+  dragId = null;
   renderTiers();
   debouncedSaveConfig();
 });
@@ -986,9 +1015,6 @@ let currentFlashChampion: TierChampion | null = null;
 
 function setBattleStage(stage: BattleStage) {
   currentBattleStage = stage;
-  document.querySelectorAll("#btStageSeg button").forEach((b) => {
-    b.classList.toggle("on", (b as HTMLElement).dataset.stage === stage);
-  });
   const flashWrap = document.getElementById("btFlashWrap");
   const pkWrap = document.getElementById("btPkWrap");
   if (flashWrap) flashWrap.style.display = stage === "flash" ? "" : "none";
@@ -997,14 +1023,8 @@ function setBattleStage(stage: BattleStage) {
   else syncBattlePool();
 }
 
-document.getElementById("btStageSeg")?.addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest("button") as HTMLElement | null;
-  const stage = b?.dataset.stage as BattleStage | undefined;
-  if (stage === "flash" || stage === "pk") setBattleStage(stage);
-});
-
 document.getElementById("flashGoPk")?.addEventListener("click", () => {
-  setBattleStage("pk");
+  activateHeroTab("pk");
 });
 
 document.getElementById("flashScopeSeg")?.addEventListener("click", (e) => {
@@ -1179,12 +1199,21 @@ document.getElementById("flashSkip")?.addEventListener("click", skipFlashCard);
 document.getElementById("flashUndo")?.addEventListener("click", undoFlashCard);
 
 /* ---------- Stage 2: Intra-Tier Pairwise PK ---------- */
-const RECENT_CHAMP_LIMIT = 4;
-const RECENT_PAIR_LIMIT = 20;
 
+/** Committed weights: only an applied draft may change these. */
 const eloMap: Record<number, number> = {};
 const pkComparisonsMap: Record<number, number> = {};
-let battleRoundCount = 1;
+
+/**
+ * Draft weights for this session (champions voted on only). Votes never touch
+ * `eloMap` / `pkComparisonsMap` or the saved file; they are merged in on 套用.
+ */
+let draftElo: Record<number, number> = {};
+let draftComp: Record<number, number> = {};
+let draftVotes = 0;
+/** True while an apply is writing its backup / config; blocks votes and a second apply. */
+let pkApplying = false;
+
 interface PkUndoEntry {
   aId: number;
   bId: number;
@@ -1196,33 +1225,100 @@ interface PkUndoEntry {
 let pkUndoHistory: PkUndoEntry[] = [];
 let battlePool: TierChampion[] = [];
 let currentPair: [TierChampion, TierChampion] | null = null;
-const recentBattleChampIds: number[] = [];
-const recentPairKeys: string[] = [];
+const pairMemory = createPairMemory();
 
-const pairKey = (a: number, b: number) => (a < b ? `${a}-${b}` : `${b}-${a}`);
-const eloOf = (c: TierChampion) => eloMap[c.id] ?? 1500;
-const compOf = (c: TierChampion) => pkComparisonsMap[c.id] ?? 0;
+/** Battle-tab readers: draft first, committed weight as the fallback. */
+const pkEloOf = (c: TierChampion) => draftElo[c.id] ?? eloMap[c.id] ?? 1500;
+const pkCompOf = (c: TierChampion) => draftComp[c.id] ?? pkComparisonsMap[c.id] ?? 0;
+/** Committed-only reader, used once the draft has been merged in. */
+const committedEloOf = (c: TierChampion) => eloMap[c.id] ?? 1500;
 
+/* ---- Draft persistence (survives a crash / reload) ---- */
+const PK_DRAFT_KEY = "lolafk_pk_draft_v1";
+/** One config per computer: the draft belongs to it, whatever account is logged in. */
+interface StoredPkDraft {
+  scope: string;
+  draftElo: Record<number, number>;
+  draftComp: Record<number, number>;
+  draftVotes: number;
+  undo: PkUndoEntry[];
+}
+/** Remember the draft so a crash or reload can offer to resume it. */
+function storePkDraft() {
+  try {
+    if (draftVotes <= 0) return void localStorage.removeItem(PK_DRAFT_KEY);
+    const payload: StoredPkDraft = { scope: pkTargetScope, draftElo, draftComp, draftVotes, undo: pkUndoHistory };
+    localStorage.setItem(PK_DRAFT_KEY, JSON.stringify(payload));
+  } catch (e) {
+    console.warn("Could not store the PK draft:", e);
+  }
+}
+
+/** The stored draft, when it has votes (older drafts also carry a `puuid`, now ignored). */
+function readStoredPkDraft(): StoredPkDraft | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PK_DRAFT_KEY) ?? "null") as StoredPkDraft | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    return typeof parsed.draftVotes === "number" && parsed.draftVotes > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredPkDraft() {
+  try {
+    localStorage.removeItem(PK_DRAFT_KEY);
+  } catch {
+    // Storage disabled: the draft simply lives in memory only.
+  }
+}
+
+/** Drop the in-memory draft and everything derived from it (and the stored copy unless told not to). */
+function resetDraft(clearStorage = true) {
+  draftElo = {};
+  draftComp = {};
+  draftVotes = 0;
+  pkUndoHistory = [];
+  if (clearStorage) clearStoredPkDraft();
+  hideApplyPreview();
+  const confirmRow = document.getElementById("btDiscardConfirm");
+  if (confirmRow) confirmRow.style.display = "none";
+}
+
+/** Pre-apply snapshot so 復原上次套用 can put the exact state back. */
+interface PreApplySnapshot {
+  profile: TierChampion[];
+  elo: Record<number, number>;
+  comp: Record<number, number>;
+  /** `profileSignature()` right after the apply; any later edit invalidates the revert. */
+  signature: string;
+}
+let preApplySnapshot: PreApplySnapshot | null = null;
+
+function setPkScope(scope: string) {
+  pkTargetScope = scope;
+  document.querySelectorAll("#pkTierSeg button").forEach((b) =>
+    b.classList.toggle("on", (b as HTMLElement).dataset.tier === scope)
+  );
+}
 document.getElementById("pkTierSeg")?.addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest("button") as HTMLElement | null;
   const tier = b?.dataset.tier;
-  if (!tier) return;
-  pkTargetScope = tier;
-  document.querySelectorAll("#pkTierSeg button").forEach((x) => x.classList.toggle("on", x === b));
+  if (!tier || tier === pkTargetScope) return;
+  // Apply only re-sorts the current scope, so a draft must not span scopes.
+  if (draftVotes > 0) {
+    addLog("skip", "範圍未切換", `本輪【${pkTargetScope}】還有 ${draftVotes} 票未套用，請先套用或放棄`);
+    return;
+  }
+  setPkScope(tier);
   currentPair = null;
-  recentBattleChampIds.length = 0;
-  recentPairKeys.length = 0;
   syncBattlePool();
 });
 
-function resolvePkPool(list: TierChampion[]): TierChampion[] {
-  if (pkTargetScope === "top2") {
-    return list.filter((c) => c.t === "本命" || c.t === "愛角");
-  }
-  if (pkTargetScope === "all") {
-    return list.filter((c) => c.t !== "封印");
-  }
-  return list.filter((c) => c.t === pkTargetScope);
+function resolvePkPool(list: TierChampion[], scope: string = pkTargetScope): TierChampion[] {
+  if (scope === "top2") return list.filter((c) => c.t === "本命" || c.t === "愛角");
+  if (scope === "all") return list.filter((c) => c.t !== "封印");
+  return list.filter((c) => c.t === scope);
 }
 
 function syncBattlePool() {
@@ -1241,13 +1337,6 @@ function syncBattlePool() {
   });
 
   const poolIds = new Set(battlePool.map((c) => c.id));
-  for (let i = recentBattleChampIds.length - 1; i >= 0; i--) {
-    if (!poolIds.has(recentBattleChampIds[i])) recentBattleChampIds.splice(i, 1);
-  }
-  for (let i = recentPairKeys.length - 1; i >= 0; i--) {
-    const [x, y] = recentPairKeys[i].split("-").map(Number);
-    if (!poolIds.has(x) || !poolIds.has(y)) recentPairKeys.splice(i, 1);
-  }
 
   if (currentPair && (!poolIds.has(currentPair[0].id) || !poolIds.has(currentPair[1].id))) {
     currentPair = null;
@@ -1264,13 +1353,13 @@ function renderBattle() {
   const card = (c: TierChampion, k: string) => `
     ${img(c.id, c.n)}
     <div class="nm">${escapeHtml(c.n)}</div>
-    <div class="meta">${escapeHtml(c.t)} · 權重 ${Math.round(eloOf(c))} · 已比 ${compOf(c)} 次</div>
+    <div class="meta">${escapeHtml(c.t)} · 權重 ${Math.round(pkEloOf(c))} · 已比 ${pkCompOf(c)} 次</div>
     <span class="key">${k}</span>`;
 
   const elL = document.getElementById("fL");
   const elR = document.getElementById("fR");
   if (battlePool.length < 2) {
-    const msg = `<div class="nm">此範圍英雄不足 2 隻</div><div class="meta">請先用「① 閃卡五分類」或「帳號專精自動初排」放入英雄，或切換上方範圍。</div>`;
+    const msg = `<div class="nm">此範圍英雄不足 2 隻</div><div class="meta">請先用「閃卡五分類」或「優先序」頁的「帳號專精自動初排」放入英雄，或切換上方範圍。</div>`;
     if (elL) elL.innerHTML = msg;
     if (elR) elR.innerHTML = `<div class="nm">—</div>`;
   } else {
@@ -1279,30 +1368,31 @@ function renderBattle() {
   }
 
   const est = estimatedPkRounds();
-  const minPlayed = battlePool.length > 0 ? Math.min(...battlePool.map((c) => compOf(c))) : 0;
-  const coveredCount = battlePool.filter((c) => compOf(c) > 0).length;
+  const minPlayed = battlePool.length > 0 ? Math.min(...battlePool.map((c) => pkCompOf(c))) : 0;
+  const coveredCount = battlePool.filter((c) => pkCompOf(c) > 0).length;
   const rEl = document.getElementById("btRound");
   if (rEl) {
-    rEl.textContent = `第 ${battleRoundCount} 回合 · 已出場 ${coveredCount}/${battlePool.length} 隻（最少已比 ${minPlayed} 次）`;
+    rEl.textContent = `本輪已比 ${draftVotes} 場 · 已出場 ${coveredCount}/${battlePool.length} 隻（最少已比 ${minPlayed} 次）`;
   }
   const bEl = document.getElementById("btBar");
   if (bEl) {
     const coveragePct = battlePool.length > 0 ? (coveredCount / battlePool.length) * 100 : 0;
-    const roundPct = (battleRoundCount / est) * 100;
-    bEl.style.width = `${Math.min(100, Math.max(coveragePct, roundPct))}%`;
+    bEl.style.width = `${Math.min(100, Math.max(coveragePct, (draftVotes / est) * 100))}%`;
   }
 
   const rankEl = document.getElementById("rank");
   if (rankEl) {
     rankEl.innerHTML = [...battlePool]
-      .sort((x, y) => eloOf(y) - eloOf(x))
+      .sort((x, y) => pkEloOf(y) - pkEloOf(x))
       .slice(0, 12)
       .map(
         (c) =>
-          `<li>${img(c.id, c.n)}<span>${escapeHtml(c.n)}</span><span class="elo">${Math.round(eloOf(c))}</span></li>`
+          `<li>${img(c.id, c.n)}<span>${escapeHtml(c.n)}</span><span class="elo">${Math.round(pkEloOf(c))}</span></li>`
       )
       .join("");
   }
+
+  updateBattleButtons();
 }
 
 function nextBattlePair() {
@@ -1312,185 +1402,374 @@ function nextBattlePair() {
     return;
   }
 
-  // 1. Exclude just-shown champions when the pool has >= 4 entries, then pick from the LEAST compared champions!
-  const recentLimit = Math.max(0, Math.min(RECENT_CHAMP_LIMIT, battlePool.length - 2));
-  const excluded = new Set(recentBattleChampIds.slice(-recentLimit));
-  let candidatesA = battlePool.filter((c) => !excluded.has(c.id));
-  if (candidatesA.length === 0) candidatesA = [...battlePool];
-
-  const minCompA = Math.min(...candidatesA.map((c) => compOf(c)));
-  const leastPlayedA = candidatesA.filter((c) => compOf(c) === minCompA);
-  const a = leastPlayedA[Math.floor(Math.random() * leastPlayedA.length)];
-
-  // 2. For partner B, avoid recent pairs with A and prioritize low comparison count + close Elo.
-  const recentPairs = new Set(recentPairKeys);
-  let candidatesB = battlePool.filter(
-    (c) => c.id !== a.id && !excluded.has(c.id) && !recentPairs.has(pairKey(a.id, c.id))
-  );
-  if (candidatesB.length === 0) {
-    candidatesB = battlePool.filter((c) => c.id !== a.id && !recentPairs.has(pairKey(a.id, c.id)));
-  }
-  if (candidatesB.length === 0) {
-    candidatesB = battlePool.filter((c) => c.id !== a.id);
-  }
-
-  candidatesB.sort((x, y) => {
-    const compDiff = compOf(x) - compOf(y);
-    if (compDiff !== 0) return compDiff;
-    return Math.abs(eloOf(x) - eloOf(a)) - Math.abs(eloOf(y) - eloOf(a));
-  });
-
-  const topB = candidatesB.slice(0, Math.min(4, candidatesB.length));
-  const b = topB[Math.floor(Math.random() * topB.length)];
-
-  currentPair = [a, b];
-  if (Math.random() < 0.5) currentPair.reverse();
-
-  recentBattleChampIds.push(currentPair[0].id, currentPair[1].id);
-  while (recentBattleChampIds.length > RECENT_CHAMP_LIMIT) recentBattleChampIds.shift();
-  recentPairKeys.push(pairKey(a.id, b.id));
-  while (recentPairKeys.length > RECENT_PAIR_LIMIT) recentPairKeys.shift();
-
+  currentPair = pickPair(battlePool, pairMemory, pkEloOf, pkCompOf);
   renderBattle();
 }
 
-function syncOrderFromElo() {
-  if (battlePool.length < 2) return;
-  const sorted = [...battlePool].sort((x, y) => eloOf(y) - eloOf(x));
-  const currentList = profileList;
-  const poolIdSet = new Set(sorted.map((c) => c.id));
+/** Pure: the ordered / re-tiered copy of `list` for `scope`; the input is never mutated. */
+function reorderListByScope(list: TierChampion[], weights: (c: TierChampion) => number, scope: string): TierChampion[] {
+  const pool = resolvePkPool(list, scope);
+  if (pool.length < 2) return list;
 
-  if (pkTargetScope === "top2") {
+  const sorted = [...pool].sort((x, y) => weights(y) - weights(x)).map((c) => ({ ...c }));
+
+  if (scope === "top2") {
     const numBenming = Math.max(1, Math.round(sorted.length * 0.35));
-    sorted.forEach((c, i) => {
-      c.t = i < numBenming ? "本命" : "愛角";
-    });
-  } else if (pkTargetScope === "all") {
+    sorted.forEach((c, i) => (c.t = i < numBenming ? "本命" : "愛角"));
+  } else if (scope === "all") {
     const n1 = Math.max(1, Math.round(sorted.length * 0.12));
     const n2 = Math.max(1, Math.round(sorted.length * 0.22));
     const n3 = Math.max(1, Math.round(sorted.length * 0.34));
     sorted.forEach((c, i) => {
-      if (i < n1) c.t = "本命";
-      else if (i < n1 + n2) c.t = "愛角";
-      else if (i < n1 + n2 + n3) c.t = "順手";
-      else c.t = "勉強";
+      c.t = i < n1 ? "本命" : i < n1 + n2 ? "愛角" : i < n1 + n2 + n3 ? "順手" : "勉強";
     });
   }
 
+  const poolIdSet = new Set(sorted.map((c) => c.id));
+  const next = [...list];
   const slots: number[] = [];
-  currentList.forEach((c, i) => {
+  list.forEach((c, i) => {
     if (poolIdSet.has(c.id)) slots.push(i);
   });
   slots.forEach((slot, k) => {
-    if (sorted[k]) currentList[slot] = sorted[k];
+    if (sorted[k]) next[slot] = sorted[k];
   });
+  return next;
+}
 
-  renderTiers();
-  debouncedSaveConfig();
+/** Committed live path: recompute the order from committed weights and adopt it. */
+function syncOrderFromElo() {
+  profileList = reorderListByScope(profileList, committedEloOf, pkTargetScope);
+}
+
+interface ApplyPreview {
+  moved: { name: string; from: number; to: number }[];
+  tierChanges: { name: string; from: string; to: string }[];
+}
+
+/** What applying the draft would change, computed on a copy (nothing is mutated). */
+function computeApplyPreview(): ApplyPreview {
+  const next = reorderListByScope(profileList, pkEloOf, pkTargetScope);
+  const before = new Map(profileList.map((c, i) => [c.id, { pos: i + 1, tier: c.t }]));
+  const moved: ApplyPreview["moved"] = [];
+  const tierChanges: ApplyPreview["tierChanges"] = [];
+  next.forEach((c, i) => {
+    const prev = before.get(c.id);
+    if (!prev) return;
+    if (prev.pos !== i + 1) moved.push({ name: c.n, from: prev.pos, to: i + 1 });
+    if (prev.tier !== c.t) tierChanges.push({ name: c.n, from: prev.tier, to: c.t });
+  });
+  moved.sort((a, b) => a.to - b.to);
+  return { moved, tierChanges };
+}
+
+function renderApplyPreview() {
+  const panel = document.getElementById("btPreview");
+  const body = document.getElementById("btPreviewBody");
+  if (!panel || !body) return;
+  const preview = computeApplyPreview();
+  const shown = preview.moved.slice(0, 15);
+  const rest = preview.moved.length - shown.length;
+  const movedHtml = shown
+    .map((m) => `<li>${escapeHtml(m.name)}：名次 ${m.from} → ${m.to}</li>`)
+    .join("");
+  const tierHtml = preview.tierChanges
+    .map((t) => `<div>${escapeHtml(t.name)}：${escapeHtml(t.from)} → ${escapeHtml(t.to)}</div>`)
+    .join("");
+  body.innerHTML = `
+    <div class="card-desc" style="margin:0">範圍【${escapeHtml(pkTargetScope)}】· 本輪 ${draftVotes} 票 · ${preview.moved.length} 隻名次變動</div>
+    <div class="card-desc" style="margin:4px 0 0">套用會把整個【${escapeHtml(pkTargetScope)}】依權重重新排序，包含這輪沒比到的英雄；不想動到手排的順序就按取消。</div>
+    ${shown.length > 0 ? `<ol class="preview-list">${movedHtml}</ol>` : `<div class="preview-more">名次不變</div>`}
+    ${rest > 0 ? `<div class="preview-more">…還有 ${rest} 隻</div>` : ""}
+    <div class="preview-tiers">${tierHtml || "階層不變"}</div>`;
+  panel.style.display = "";
+  panel.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function hideApplyPreview() {
+  const panel = document.getElementById("btPreview");
+  if (panel) panel.style.display = "none";
+}
+
+function updateBattleButtons() {
+  const setDisabled = (id: string, disabled: boolean) => {
+    const el = document.getElementById(id) as HTMLButtonElement | null;
+    if (el) el.disabled = disabled;
+  };
+  setDisabled("btApply", draftVotes === 0 || pkApplying);
+  setDisabled("btPreviewConfirm", draftVotes === 0 || pkApplying);
+  setDisabled("btDiscard", draftVotes === 0 || pkApplying);
+  const revertBtn = document.getElementById("btRevertApply");
+  if (revertBtn) revertBtn.style.display = liveApplySnapshot() ? "" : "none";
+}
+
+/** While the "上次有 N 票未套用" banner is up, a new vote would overwrite that stored draft. */
+function draftBannerBlocksVoting(): boolean {
+  const banner = document.getElementById("btDraftBanner");
+  if (!banner || banner.style.display === "none") return false;
+  banner.classList.remove("nudge");
+  void banner.offsetWidth;
+  banner.classList.add("nudge");
+  return true;
 }
 
 function voteBattle(winner: 0 | 1 | "tie" | "down") {
-  if (!currentPair) return;
+  if (!currentPair || pkApplying || draftBannerBlocksVoting()) return;
+  hideApplyPreview();
   const [a, b] = currentPair;
   const K = 32;
-  const elo = eloMap;
-  const comp = pkComparisonsMap;
-
   pkUndoHistory.push({
     aId: a.id,
     bId: b.id,
-    prevEloA: eloOf(a),
-    prevEloB: eloOf(b),
-    prevCompA: compOf(a),
-    prevCompB: compOf(b),
+    prevEloA: pkEloOf(a),
+    prevEloB: pkEloOf(b),
+    prevCompA: pkCompOf(a),
+    prevCompB: pkCompOf(b),
   });
-
-  const ea = 1 / (1 + Math.pow(10, (eloOf(b) - eloOf(a)) / 400));
+  const ea = 1 / (1 + Math.pow(10, (pkEloOf(b) - pkEloOf(a)) / 400));
   const sa = winner === 0 ? 1 : winner === 1 ? 0 : winner === "tie" ? 0.5 : null;
-
   if (sa != null) {
-    elo[a.id] = eloOf(a) + K * (sa - ea);
-    elo[b.id] = eloOf(b) - K * (sa - ea);
+    draftElo[a.id] = pkEloOf(a) + K * (sa - ea);
+    draftElo[b.id] = pkEloOf(b) - K * (sa - ea);
   }
   if (winner === "down") {
-    elo[a.id] = eloOf(a) - 18;
-    elo[b.id] = eloOf(b) - 18;
+    draftElo[a.id] = pkEloOf(a) - 18;
+    draftElo[b.id] = pkEloOf(b) - 18;
   }
-  comp[a.id] = compOf(a) + 1;
-  comp[b.id] = compOf(b) + 1;
-
-  battleRoundCount += 1;
-  // Immediately persist the updated order & Elo after every single click!
-  syncOrderFromElo();
+  draftComp[a.id] = pkCompOf(a) + 1;
+  draftComp[b.id] = pkCompOf(b) + 1;
+  draftVotes += 1;
+  storePkDraft();
   nextBattlePair();
 }
 
 function undoBattleVote() {
   const hist = pkUndoHistory;
-  if (!hist || hist.length === 0) return;
+  if (!hist || hist.length === 0 || pkApplying) return;
+  hideApplyPreview();
   const last = hist.pop()!;
-  const elo = eloMap;
-  const comp = pkComparisonsMap;
-  elo[last.aId] = last.prevEloA;
-  elo[last.bId] = last.prevEloB;
-  comp[last.aId] = last.prevCompA;
-  comp[last.bId] = last.prevCompB;
-  battleRoundCount = Math.max(1, battleRoundCount - 1);
-
+  draftElo[last.aId] = last.prevEloA;
+  draftElo[last.bId] = last.prevEloB;
+  draftComp[last.aId] = last.prevCompA;
+  draftComp[last.bId] = last.prevCompB;
+  draftVotes = Math.max(0, draftVotes - 1);
   const a = battlePool.find((c) => c.id === last.aId);
   const b = battlePool.find((c) => c.id === last.bId);
-  if (a && b) {
-    currentPair = [a, b];
-  }
-  syncOrderFromElo();
+  if (a && b) currentPair = [a, b];
+  storePkDraft();
   renderBattle();
 }
 
-document.getElementById("fL")?.addEventListener("click", () => voteBattle(0));
-document.getElementById("fR")?.addEventListener("click", () => voteBattle(1));
-document.getElementById("btTie")?.addEventListener("click", () => voteBattle("tie"));
-document.getElementById("btDown")?.addEventListener("click", () => voteBattle("down"));
-document.getElementById("btUndo")?.addEventListener("click", () => undoBattleVote());
-document.getElementById("btSkip")?.addEventListener("click", () => {
-  battleRoundCount += 1;
-  nextBattlePair();
-});
-
-document.getElementById("btApply")?.addEventListener("click", () => {
-  applyBattleToTiers();
-});
-
-function applyBattleToTiers() {
-  syncOrderFromElo();
-  addLog(
-    "act",
-    "二選一順位已套用",
-    `已將 ${battlePool.length} 位英雄依對決權重寫入【共用 · ${pkTargetScope}】順位`
-  );
-  go("hero");
+function discardDraft() {
+  const votes = draftVotes;
+  resetDraft();
+  renderBattle();
+  addLog("skip", "已放棄本輪二選一", `${votes} 票草稿已丟棄，優先序與權重未變動`);
 }
 
-/* Hero page tabs: 優先序 / 二選一 */
-function activateHeroTab(tab: string) {
-  document.querySelectorAll("#heroTabs span").forEach((s) =>
+/** Merge the draft into the committed weights and adopt the new order. */
+async function confirmApplyDraft() {
+  if (draftVotes === 0 || pkApplying) return;
+  pkApplying = true;
+  updateBattleButtons();
+  try {
+    await applyDraftOnce();
+  } finally {
+    pkApplying = false;
+    updateBattleButtons();
+  }
+}
+
+async function applyDraftOnce() {
+  hideApplyPreview();
+
+  // Never write without a backup: the backend snapshot must land first.
+  try {
+    await invoke("backup_config_snapshot", { reason: "pk-apply", stamp: backupStamp() });
+  } catch (err) {
+    addLog("err", "備份失敗，二選一未套用", `無法寫入備份檔，草稿仍保留（${String(err)}）`);
+    return;
+  }
+  if (draftVotes === 0) return;
+
+  const preview = computeApplyPreview();
+  const scope = pkTargetScope;
+  const votes = draftVotes;
+  const snapshot: PreApplySnapshot = {
+    profile: profileList.map((c) => ({ ...c })),
+    elo: { ...eloMap },
+    comp: { ...pkComparisonsMap },
+    signature: "",
+  };
+  const draft = { elo: { ...draftElo }, comp: { ...draftComp }, votes: draftVotes, undo: [...pkUndoHistory] };
+  for (const [key, value] of Object.entries(draftElo)) eloMap[Number(key)] = value;
+  for (const [key, value] of Object.entries(draftComp)) pkComparisonsMap[Number(key)] = value;
+
+  resetDraft(false);
+  syncOrderFromElo();
+  const saved = await saveConfigReport();
+  /** Put the pre-apply order back and the votes back into a single draft. */
+  const restoreDraft = () => {
+    profileList = snapshot.profile.map((c) => ({ ...c }));
+    replaceWeights(eloMap, snapshot.elo);
+    replaceWeights(pkComparisonsMap, snapshot.comp);
+    draftElo = draft.elo;
+    draftComp = draft.comp;
+    draftVotes = draft.votes;
+    pkUndoHistory = draft.undo;
+    storePkDraft();
+  };
+  if (saved === "memory-only") {
+    // The backend already runs on the new order: keep the screen in step.
+    // The draft is spent: a later successful save writes this order too, so
+    // offering the votes again would count them twice.
+    clearStoredPkDraft();
+    snapshot.signature = profileSignature();
+    preApplySnapshot = snapshot;
+    renderTiers();
+    addLog("err", "二選一只套用到本次執行", "設定檔暫時無法寫入；之後任何一次存檔成功就會一起寫入，重新啟動前都沒成功的話這幾票會遺失");
+    activateHeroTab("priority");
+    return;
+  }
+  if (saved === "refused") {
+    // Nothing reaches the file this run: keep the votes as the one live draft
+    // (not merged), so they can be applied once after a restart.
+    restoreDraft();
+    // The backend took the merged order into memory: hand it the restored one.
+    await saveConfigReport();
+    renderTiers();
+    renderBattle();
+    addLog("err", "二選一未套用", "設定檔讀取失敗保護中，這次執行無法存檔；優先序未變動，草稿已保留，重新啟動 App 後再套用");
+    return;
+  }
+  clearStoredPkDraft();
+  snapshot.signature = profileSignature();
+  preApplySnapshot = snapshot;
+  renderTiers();
+  addLog("act", "二選一已套用", `${scope} · ${votes} 票 · ${preview.moved.length} 隻名次變動 · 已備份`);
+  activateHeroTab("priority");
+}
+
+/** Order + tier + flag + spell of every champion: detects edits made after an apply. */
+function profileSignature(): string {
+  return profileList.map((c) => `${c.id}:${c.t}:${c.f}:${c.secSpell ?? ""}`).join("|");
+}
+
+/** The pre-apply snapshot, or null once the priority list was edited after the apply. */
+function liveApplySnapshot(): PreApplySnapshot | null {
+  if (preApplySnapshot && preApplySnapshot.signature !== profileSignature()) preApplySnapshot = null;
+  return preApplySnapshot;
+}
+
+/** Put the exact pre-apply order, tiers and weights back. */
+async function revertLastApply() {
+  const snapshot = liveApplySnapshot();
+  if (!snapshot) {
+    updateBattleButtons();
+    addLog("skip", "無法復原上次套用", "套用後優先序又改過；要回到套用前請匯入 backups/ 內的備份檔");
+    return;
+  }
+  profileList = snapshot.profile.map((c) => ({ ...c }));
+  replaceWeights(eloMap, snapshot.elo);
+  replaceWeights(pkComparisonsMap, snapshot.comp);
+  const saved = await saveConfigReport();
+  // "memory-only" and "refused" also land here: the backend already runs on
+  // the restored order, so the screen must show it too.
+  preApplySnapshot = null;
+  renderTiers();
+  syncBattlePool();
+  updateBattleButtons();
+  if (saved !== "saved") {
+    addLog("err", "復原只套用到本次執行", "設定檔沒有寫入；之後的存檔若都沒成功，重新啟動後會回到最後一次成功存檔時的排名");
+    return;
+  }
+  addLog("act", "已復原上次套用", "二選一順位、階層與權重已還原為套用前狀態");
+}
+
+function replaceWeights(target: Record<number, number>, source: Record<number, number>) {
+  for (const key of Object.keys(target)) delete target[Number(key)];
+  for (const [key, value] of Object.entries(source)) target[Number(key)] = value;
+}
+
+/** Offer to resume a draft that was left behind by a crash / reload. */
+function showDraftBannerIfAny() {
+  const banner = document.getElementById("btDraftBanner");
+  if (!banner) return;
+  const stored = draftVotes > 0 ? null : readStoredPkDraft();
+  if (!stored) {
+    banner.style.display = "none";
+    return;
+  }
+  const text = document.getElementById("btDraftBannerText");
+  if (text) text.textContent = `上次有 ${stored.draftVotes} 票未套用`;
+  banner.style.display = "";
+}
+
+function resumeStoredDraft() {
+  const stored = readStoredPkDraft();
+  if (!stored) return;
+  draftElo = stored.draftElo ?? {};
+  draftComp = stored.draftComp ?? {};
+  draftVotes = stored.draftVotes;
+  pkUndoHistory = Array.isArray(stored.undo) ? stored.undo : [];
+  if (stored.scope) setPkScope(stored.scope);
+  currentPair = null;
+  syncBattlePool();
+  showDraftBannerIfAny();
+  updateBattleButtons();
+  addLog("sys", "已接續上次未套用的二選一草稿", `${draftVotes} 票 · 範圍【${pkTargetScope}】`);
+}
+
+/* Battle-tab buttons. */
+const onBattleClick = (id: string, fn: () => void) =>
+  document.getElementById(id)?.addEventListener("click", fn);
+onBattleClick("fL", () => voteBattle(0));
+onBattleClick("fR", () => voteBattle(1));
+onBattleClick("btTie", () => voteBattle("tie"));
+onBattleClick("btDown", () => voteBattle("down"));
+onBattleClick("btUndo", () => undoBattleVote());
+onBattleClick("btSkip", () => nextBattlePair());
+onBattleClick("btApply", () => renderApplyPreview());
+onBattleClick("btPreviewCancel", () => hideApplyPreview());
+onBattleClick("btPreviewConfirm", () => void confirmApplyDraft());
+onBattleClick("btRevertApply", () => void revertLastApply());
+onBattleClick("btDiscardYes", () => discardDraft());
+onBattleClick("btDraftResume", () => resumeStoredDraft());
+onBattleClick("btDiscard", () => {
+  const count = document.getElementById("btDiscardCount");
+  if (count) count.textContent = String(draftVotes);
+  const row = document.getElementById("btDiscardConfirm");
+  if (row) row.style.display = "";
+});
+onBattleClick("btDiscardNo", () => {
+  const row = document.getElementById("btDiscardConfirm");
+  if (row) row.style.display = "none";
+});
+onBattleClick("btDraftDrop", () => {
+  clearStoredPkDraft();
+  showDraftBannerIfAny();
+  addLog("skip", "已丟棄上次未套用的二選一草稿", "優先序與權重未變動");
+});
+
+/* Hero page tabs: 優先序 | 分類方法：閃卡五分類 / 階層內二選一 */
+type HeroTab = "priority" | BattleStage;
+function activateHeroTab(tab: HeroTab) {
+  document.querySelectorAll(".hero-tabs-row [data-hero-tab]").forEach((s) =>
     s.classList.toggle("on", (s as HTMLElement).dataset.heroTab === tab)
   );
   const priority = document.getElementById("tab-priority");
   const battle = document.getElementById("tab-battle");
   if (priority) priority.style.display = tab === "priority" ? "" : "none";
-  if (battle) battle.style.display = tab === "battle" ? "" : "none";
-  if (tab === "battle") {
-    syncFlashPool();
-    syncBattlePool();
+  if (battle) battle.style.display = tab === "priority" ? "none" : "";
+  if (tab !== "priority") {
+    setBattleStage(tab);
+    showDraftBannerIfAny();
+    updateBattleButtons();
   }
 }
-document.getElementById("heroTabs")?.addEventListener("click", (e) => {
-  const t = (e.target as HTMLElement).closest("[data-hero-tab]") as HTMLElement | null;
-  if (t?.dataset.heroTab) activateHeroTab(t.dataset.heroTab);
-});
-document.getElementById("btnGotoBattle")?.addEventListener("click", () => {
-  go("hero");
-  activateHeroTab("battle");
+document.querySelector(".hero-tabs-row")?.addEventListener("click", (e) => {
+  const tab = ((e.target as HTMLElement).closest("[data-hero-tab]") as HTMLElement | null)?.dataset.heroTab;
+  if (tab === "priority" || tab === "flash" || tab === "pk") activateHeroTab(tab);
 });
 
 document.addEventListener("keydown", (e) => {
@@ -1541,10 +1820,368 @@ document.addEventListener("keydown", (e) => {
     undoBattleVote();
   } else if (e.key === " ") {
     e.preventDefault();
-    battleRoundCount += 1;
     nextBattlePair();
   }
 });
+
+/* ---------- Confirm dialog & safety backup ---------- */
+/** In-app yes/no dialog (native confirm() is not dependable inside WebView2). */
+function confirmDialog(title: string, body: string, okLabel = "確定"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="card confirm-box" role="dialog" aria-modal="true">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="card-desc">${escapeHtml(body)}</div>
+        <div class="confirm-actions">
+          <button class="btn" data-answer="no">取消</button>
+          <button class="btn primary" data-answer="yes">${escapeHtml(okLabel)}</button>
+        </div>
+      </div>`;
+    const finish = (answer: boolean) => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(answer);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // Captured at document level so page shortcuts (1–5, arrows) never fire
+      // underneath the dialog; Enter / Space still activate the focused button.
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    };
+    overlay.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
+      if (btn) finish(btn.dataset.answer === "yes");
+      else if (e.target === overlay) finish(false);
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(overlay);
+    (overlay.querySelector('[data-answer="no"]') as HTMLButtonElement | null)?.focus();
+  });
+}
+
+/**
+ * In-app multi-choice dialog on the same overlay as `confirmDialog` (切換存檔
+ * needs 取消 / 不儲存 / 儲存). Resolves the chosen value, null on cancel.
+ */
+function choiceDialog(
+  title: string,
+  body: string,
+  choices: { label: string; value: string; primary?: boolean }[]
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="card confirm-box" role="dialog" aria-modal="true">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="card-desc">${escapeHtml(body)}</div>
+        <div class="confirm-actions">
+          ${choices
+            .map(
+              (c) =>
+                `<button class="btn${c.primary ? " primary" : ""}" data-answer="${escapeHtml(
+                  c.value
+                )}">${escapeHtml(c.label)}</button>`
+            )
+            .join("")}
+        </div>
+      </div>`;
+    const finish = (answer: string | null) => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(answer);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // Captured at document level so page shortcuts (1–5, arrows) never fire
+      // underneath the dialog; Enter / Space still activate the focused button.
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+      }
+    };
+    overlay.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
+      if (btn) finish(btn.dataset.answer ?? null);
+      else if (e.target === overlay) finish(null);
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(overlay);
+    (overlay.querySelector("[data-answer]") as HTMLButtonElement | null)?.focus();
+  });
+}
+
+/** Local `YYYYMMDD-HHMMSS`, the stamp format the backend accepts for backup names. */
+function backupStamp(): string {
+  const d = new Date();
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(
+    d.getMinutes()
+  )}${pad2(d.getSeconds())}`;
+}
+
+/** Snapshot the saved config before a bulk edit; false (and logged) when the backup failed. */
+async function backupBeforeBulkEdit(reason: string, what: string): Promise<boolean> {
+  try {
+    await invoke("backup_config_snapshot", { reason, stamp: backupStamp() });
+    return true;
+  } catch (err) {
+    addLog("err", `備份失敗，${what}已取消`, String(err));
+    return false;
+  }
+}
+
+/* ---------- Named Ranking Saves (排序存檔) ---------- */
+// The working ranking (`profileList` + `eloMap` + `pkComparisonsMap`) keeps
+// auto-saving to the config file, but it is not the active save: every save,
+// the active one included, stores its own last manual save in `items`. While the
+// working ranking differs from the active save it is 未儲存, and 儲存 / 還原 move
+// it in and out by hand.
+let rankingSaves: RankingSave[] = [];
+let activeRankingSave = "";
+
+/** Save item → config item; the remembered secondary spell stays per champion. */
+function toProfileItemConfig(item: RankingSaveItem): ProfileItemConfig {
+  const out: ProfileItemConfig = { id: item.id, name: item.name, tier: item.tier, flag: item.flag };
+  if (item.elo !== undefined) out.elo = item.elo;
+  if (item.matches !== undefined) out.matches = item.matches;
+  return out;
+}
+
+function activeRankingSaveEntry(): RankingSave | undefined {
+  return rankingSaves.find((s) => s.id === activeRankingSave);
+}
+
+/** Fill the save bar, the 未儲存 state and the actions that would break a limit. */
+function renderRankingSaveBar() {
+  const select = document.getElementById("rankSaveSelect") as HTMLSelectElement | null;
+  if (select) {
+    select.innerHTML = rankingSaves
+      .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`)
+      .join("");
+    select.value = activeRankingSave;
+  }
+  const del = document.getElementById("btnRankSaveDelete") as HTMLButtonElement | null;
+  if (del) del.disabled = rankingSaves.length < 2;
+  const add = document.getElementById("btnRankSaveNew") as HTMLButtonElement | null;
+  if (add) add.disabled = rankingSaves.length >= MAX_RANKING_SAVES;
+
+  const active = activeRankingSaveEntry();
+  const dirty = active ? isDirty(active.items, profileList, eloMap, pkComparisonsMap) : false;
+  const status = document.getElementById("rankSaveStatus");
+  if (status) status.hidden = !dirty;
+  const save = document.getElementById("btnRankSaveSave") as HTMLButtonElement | null;
+  if (save) {
+    save.disabled = !dirty;
+    save.classList.toggle("primary", dirty);
+  }
+  const revert = document.getElementById("btnRankSaveRevert") as HTMLButtonElement | null;
+  if (revert) revert.hidden = !dirty;
+}
+
+/** Copy the working ranking into the active save (儲存 / 儲存並切換). */
+function saveWorkingIntoActive() {
+  const save = activeRankingSaveEntry();
+  if (save) save.items = captureLive(profileList, eloMap, pkComparisonsMap);
+}
+
+/** Show a save and make it the active one (the working ranking becomes its content). */
+function loadSaveIntoLive(save: RankingSave) {
+  const restored = restoreSave(save.items, profileList);
+  profileList = restored.list;
+  replaceWeights(eloMap, restored.elo);
+  replaceWeights(pkComparisonsMap, restored.matches);
+  activeRankingSave = save.id;
+  // Same flash state reset as 重置: the pools belong to the previous ranking.
+  flashSkippedIds.clear();
+  flashSeenAllIds.clear();
+  flashUndoHistory = [];
+  renderTiers();
+  syncFlashPool();
+  syncBattlePool();
+}
+
+/** 儲存: the working ranking becomes the active save's content. */
+async function saveActiveRankingSave() {
+  const save = activeRankingSaveEntry();
+  if (!save) return;
+  saveWorkingIntoActive();
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已儲存排序存檔", `「${save.name}」`);
+}
+
+/** 還原: throw the unsaved working ranking away and reload the active save. */
+async function revertActiveRankingSave() {
+  const save = activeRankingSaveEntry();
+  if (!save) return;
+  const draftNote = draftVotes > 0 ? `另有 ${draftVotes} 票二選一草稿尚未套用，會一併捨棄。` : "";
+  const body = `畫面上未儲存的修改會捨棄，回到「${save.name}」上次儲存的排序、標記與二選一權重。${draftNote}`;
+  if (!(await confirmDialog(`還原「${save.name}」？`, body, "還原"))) return;
+  if (draftVotes > 0) resetDraft();
+  loadSaveIntoLive(save);
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已還原排序存檔", `「${save.name}」`);
+}
+
+async function switchRankingSave(targetId: string) {
+  const target = rankingSaves.find((s) => s.id === targetId);
+  if (!target || target.id === activeRankingSave) {
+    renderRankingSaveBar();
+    return;
+  }
+  if (draftVotes > 0) {
+    const body = `目前有 ${draftVotes} 票二選一草稿尚未套用，切換會捨棄這份草稿。`;
+    if (!(await confirmDialog("切換排序存檔？", body, "捨棄並切換"))) {
+      renderRankingSaveBar();
+      return;
+    }
+    resetDraft();
+  }
+  const active = activeRankingSaveEntry();
+  if (active && isDirty(active.items, profileList, eloMap, pkComparisonsMap)) {
+    const choice = await choiceDialog(
+      `「${active.name}」有未儲存的修改`,
+      `切換前要先把目前的排序儲存到「${active.name}」嗎？`,
+      [
+        { label: "取消", value: "cancel" },
+        { label: "不儲存，直接切換", value: "discard" },
+        { label: "儲存並切換", value: "save", primary: true },
+      ]
+    );
+    if (choice !== "save" && choice !== "discard") {
+      renderRankingSaveBar();
+      return;
+    }
+    if (choice === "save") saveWorkingIntoActive();
+  }
+  loadSaveIntoLive(target);
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已切換排序存檔", `「${target.name}」`);
+}
+
+async function saveAsNewRankingSave() {
+  if (rankingSaves.length >= MAX_RANKING_SAVES) return;
+  const previous = activeRankingSaveEntry();
+  const previousName = previous ? previous.name : "目前的存檔";
+  const body = `用畫面上目前的排序開一份新的存檔並切過去；「${previousName}」維持上次儲存的內容。`;
+  const name = await promptDialog("複製成新的排序存檔", body, nextSaveName(rankingSaves));
+  if (name === null) return;
+  // The new save starts clean; the old one is left exactly as it was last saved.
+  const save: RankingSave = {
+    id: newSaveId(),
+    name,
+    items: captureLive(profileList, eloMap, pkComparisonsMap),
+  };
+  rankingSaves.push(save);
+  activeRankingSave = save.id;
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已複製成新的排序存檔", `「${name}」，之後的儲存都存在這份`);
+}
+
+async function renameRankingSave() {
+  const save = activeRankingSaveEntry();
+  if (!save) return;
+  const name = await promptDialog("排序存檔改名", "新的名稱（最多 40 字）。", save.name);
+  if (name === null) return;
+  save.name = name;
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已重新命名排序存檔", `「${name}」`);
+}
+
+async function deleteRankingSave() {
+  if (rankingSaves.length < 2) return;
+  const save = activeRankingSaveEntry();
+  if (!save) return;
+  const remaining = rankingSaves.filter((s) => s.id !== save.id);
+  const next = remaining[0];
+  const dirtyNote = isDirty(save.items, profileList, eloMap, pkComparisonsMap)
+    ? "畫面上未儲存的修改也會一併捨棄。"
+    : "";
+  const draftNote = draftVotes > 0 ? `另有 ${draftVotes} 票二選一草稿尚未套用，會一併捨棄。` : "";
+  const body = `這份存檔的排序、標記與二選一權重會刪除，改用「${next.name}」。${dirtyNote}${draftNote}刪除前會先自動備份到 backups/。`;
+  if (!(await confirmDialog(`刪除排序存檔「${save.name}」？`, body, "備份並刪除"))) return;
+  if (!(await backupBeforeBulkEdit("delete-ranking-save", "刪除存檔"))) return;
+  if (draftVotes > 0) resetDraft();
+  rankingSaves = remaining;
+  // Load the next save the way 切換 does, but without capturing the deleted one.
+  loadSaveIntoLive(next);
+  renderRankingSaveBar();
+  await saveConfigImmediate();
+  addLog("act", "已刪除排序存檔", `「${save.name}」，改用「${next.name}」`);
+}
+
+/**
+ * In-app text prompt on the confirm-dialog overlay (native prompt() is not
+ * dependable inside WebView2). Resolves the trimmed value, or null on cancel.
+ */
+function promptDialog(title: string, body: string, initial: string, okLabel = "確定"): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="card confirm-box" role="dialog" aria-modal="true">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="card-desc">${escapeHtml(body)}</div>
+        <input class="input" maxlength="40" value="${escapeHtml(initial)}">
+        <div class="confirm-actions">
+          <button class="btn" data-answer="no">取消</button>
+          <button class="btn primary" data-answer="yes">${escapeHtml(okLabel)}</button>
+        </div>
+      </div>`;
+    const input = overlay.querySelector("input") as HTMLInputElement | null;
+    const finish = (answer: string | null) => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(answer);
+    };
+    const commit = () => {
+      const value = (input?.value ?? "").trim();
+      if (value) finish(value);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // Captured at document level so page shortcuts never fire underneath,
+      // while typing in the input still works.
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+      } else if (e.key === "Enter" && !e.isComposing) {
+        // isComposing: Enter that confirms an IME candidate (Chinese input) is not a submit.
+        e.preventDefault();
+        commit();
+      }
+    };
+    overlay.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
+      if (!btn) {
+        if (e.target === overlay) finish(null);
+      } else if (btn.dataset.answer === "yes") commit();
+      else finish(null);
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(overlay);
+    input?.focus();
+    input?.select();
+  });
+}
+
+document.getElementById("rankSaveSelect")?.addEventListener("change", (e) => {
+  void switchRankingSave((e.target as HTMLSelectElement).value);
+});
+document.getElementById("btnRankSaveNew")?.addEventListener("click", () => void saveAsNewRankingSave());
+document.getElementById("btnRankSaveSave")?.addEventListener("click", () => void saveActiveRankingSave());
+document.getElementById("btnRankSaveRevert")?.addEventListener("click", () => void revertActiveRankingSave());
+document.getElementById("btnRankSaveRename")?.addEventListener("click", () => void renameRankingSave());
+document.getElementById("btnRankSaveDelete")?.addEventListener("click", () => void deleteRankingSave());
 
 /* ---------- Priority Toolbar & Account Mastery Auto-Seed ---------- */
 async function importMasteryToProfile() {
@@ -1554,6 +2191,16 @@ async function importMasteryToProfile() {
       addLog("skip", "尚無專精資料可匯入", "請確認英雄聯盟客戶端已開啟並登入帳號");
       return;
     }
+    const classified = profileList.filter((c) => c.t !== "未分類").length;
+    if (classified > 0) {
+      const ok = await confirmDialog(
+        "依帳號專精重新初排？",
+        `會覆蓋目前 ${classified} 隻已分類英雄的階層與順序，並把二選一權重重設為專精順序。執行前會先自動備份到 backups/。`,
+        "備份並初排"
+      );
+      if (!ok) return;
+    }
+    if (!(await backupBeforeBulkEdit("mastery-seed", "專精初排"))) return;
 
     const masteryMap = new Map<number, ChampionMasteryItem>();
     for (const m of masteryList) {
@@ -1595,10 +2242,16 @@ async function importMasteryToProfile() {
 
     profileList = [...played, ...sealed, ...unplayed];
 
-    // Seed ELO from mastery order so pairwise PK starts from the mastery ranking.
+    // Seed ELO from mastery order so pairwise PK starts from the mastery ranking;
+    // the old match counts described the replaced weights, so they restart too.
     profileList.forEach((c, idx) => {
       eloMap[c.id] = 1700 - idx * 2;
+      pkComparisonsMap[c.id] = 0;
     });
+    if (draftVotes > 0) {
+      resetDraft();
+      addLog("skip", "已放棄本輪二選一草稿", "專精初排已重設權重，草稿不再適用");
+    }
 
     renderTiers();
     syncFlashPool();
@@ -1620,11 +2273,14 @@ async function importMasteryToProfile() {
 document.getElementById("btnImportMastery")?.addEventListener("click", () => {
   void importMasteryToProfile();
 });
-document.getElementById("btnFlashImportMastery")?.addEventListener("click", () => {
-  void importMasteryToProfile();
-});
 
-document.getElementById("btnResetTiers")?.addEventListener("click", () => {
+document.getElementById("btnResetTiers")?.addEventListener("click", async () => {
+  const ok = await confirmDialog(
+    "重置全部英雄分級？",
+    "所有英雄會回到未分類、清除 🔒/🎁/⛔ 標記。二選一權重保留。執行前會先自動備份到 backups/。",
+    "備份並重置"
+  );
+  if (!ok || !(await backupBeforeBulkEdit("reset-tiers", "重置"))) return;
   const list = profileList;
   list.forEach((c) => {
     c.t = "未分類";
@@ -1682,10 +2338,15 @@ document.getElementById("importFile")?.addEventListener("change", async (e) => {
   const file = input.files?.[0];
   if (!file) return;
   try {
-    const parsed = JSON.parse(await file.text()) as AppConfig;
-    applyConfigToUI(parsed);
-    debouncedSaveConfig();
-    addLog("act", "已匯入設定檔", file.name);
+    const parsed: unknown = JSON.parse((await file.text()).replace(/^﻿/, ""));
+    const problem = validateImportedConfig(parsed, TIER_NAMES, FLAGS);
+    if (problem) {
+      addLog("err", "匯入設定檔失敗", `${file.name}：${problem}；目前設定未變動`);
+      return;
+    }
+    if (!(await backupBeforeBulkEdit("import", "匯入"))) return;
+    applyConfigToUI(parsed as AppConfig);
+    if (await saveConfigImmediate()) addLog("act", "已匯入設定檔", `${file.name}（匯入前設定已備份到 backups/）`);
   } catch (err) {
     addLog("err", "匯入設定檔失敗", String(err));
   } finally {
@@ -1799,25 +2460,59 @@ function collectConfig(): AppConfig {
     ff_copy_clipboard: activeChkValues("cfgFfMethods").includes("clipboard"),
     ff_play_sound: activeChkValues("cfgFfMethods").includes("sound"),
     ff_desktop_notify: activeChkValues("cfgFfMethods").includes("notification"),
+    ff_lead_sec: numberValue("cfgFfLead", 0),
+    bench_retry_interval_ms: numberValue("cfgBenchRetryMs", 80),
+    manual_snipe_interval_ms: numberValue("cfgManualSnipeMs", 120),
     client_close_action: activeSegValue("cfgClientCloseAction") || "wait",
     close_to_tray: checkboxValue("cfgCloseToTray", true),
     auto_start: checkboxValue("cfgAutoStart", false),
     aram_profile: serializedProfile,
     mayhem_profile: serializedProfile,
+    // Every save carries its own last manual save, the active one included.
+    ranking_saves: rankingSaves.map((s) => ({
+      id: s.id,
+      name: s.name,
+      items: s.items.map(toProfileItemConfig),
+    })),
+    active_ranking_save: activeRankingSave,
   };
 }
 
 let saveTimer: any = null;
-async function saveConfigImmediate() {
+/** Last save error shown in the log, so a failing debounce loop logs once, not every 350ms. */
+let lastSaveError: string | null = null;
+/**
+ * "saved": on disk. "memory-only": the backend runs on it but the file write
+ * failed. "refused": like memory-only, but the unreadable-config guard refuses
+ * every save until a restart loads the file (or the file is gone).
+ * (An IPC failure before the command runs is also reported as memory-only.)
+ */
+async function saveConfigReport(): Promise<SaveResult> {
   clearTimeout(saveTimer);
+  // Every edit path funnels through here, so this is where the 未儲存 state is kept current.
+  renderRankingSaveBar();
   try {
-    await invoke("save_app_config", { newConfig: collectConfig(), expectedPuuid: activePuuid });
+    await invoke("save_app_config", { newConfig: collectConfig() });
+    if (lastSaveError) addLog("sys", "設定已恢復正常寫入", "");
+    lastSaveError = null;
+    return "saved";
   } catch (e) {
     console.error("Failed to save config:", e);
+    const { result, message } = classifySaveError(e);
+    if (message !== lastSaveError) addLog("err", "設定寫入失敗", message);
+    lastSaveError = message;
+    return result;
   }
+}
+
+/** Persist the visible settings; resolves `false` (and logs once) when not on disk. */
+async function saveConfigImmediate(): Promise<boolean> {
+  return (await saveConfigReport()) === "saved";
 }
 function debouncedSaveConfig() {
   clearTimeout(saveTimer);
+  // Show 未儲存 at once; the write itself waits for the debounce.
+  renderRankingSaveBar();
   saveTimer = setTimeout(() => {
     void saveConfigImmediate();
   }, 350);
@@ -1830,8 +2525,6 @@ document.getElementById("master")?.addEventListener("change", () => {
 /* ---------- LCU Backend Integration ---------- */
 let isLcuConnected = false;
 let lastKnownPhase = "";
-/** Puuid of the account the displayed settings belong to (null until detected). */
-let activePuuid: string | null = null;
 
 async function initLcuBackend() {
   // 1. Register real-time listeners FIRST so we never miss an event during startup
@@ -1840,7 +2533,7 @@ async function initLcuBackend() {
     updateConnectionUI(event.payload.connected, event.payload.port);
     if (event.payload.connected) {
       void loadChampionsFromLcu();
-      void syncLivePhaseAndSession();
+      void syncLivePhaseAndSession(true);
       addLog("sys", "LCU 已成功連線", `Port: ${event.payload.port || "未知"}`);
     } else {
       lastKnownPhase = "";
@@ -1878,16 +2571,12 @@ async function initLcuBackend() {
 
   await listen<AppConfig>("config-updated", (event) => applyConfigToUI(event.payload));
 
-  await listen<ActiveAccount>("account-changed", (event) => {
-    activePuuid = event.payload.puuid;
-    updateAccountPill(event.payload);
-    addLog("sys", "帳號設定已切換", event.payload.display_name || "未知帳號");
-  });
+  // Settings belong to the computer: an account switch only changes the name pill.
+  await listen<ActiveAccount>("account-changed", (event) => updateAccountPill(event.payload));
 
   // 2. Load saved config
   try {
     const account = await invoke<ActiveAccount | null>("get_active_account");
-    activePuuid = account?.puuid ?? null;
     updateAccountPill(account);
   } catch {
     // Backend may predate the command; the badge simply stays hidden.
@@ -1923,10 +2612,11 @@ async function pollLiveOverviewStatus(initial: boolean) {
     isLcuConnected = status.connected;
     updateConnectionUI(status.connected, status.port);
     if (status.connected) {
-      if (initial || changedConn) {
-        void loadChampionsFromLcu();
-      }
-      await syncLivePhaseAndSession();
+      const fresh = initial || changedConn;
+      if (fresh) void loadChampionsFromLcu();
+      // Champ select sessions arrive as lcu-event pushes; the periodic tick only
+      // keeps the phase and queue label current (a lobby queue change has no event).
+      await syncLivePhaseAndSession(fresh);
     } else if (changedConn) {
       lastKnownPhase = "";
       clearOverviewSteps();
@@ -1980,6 +2670,9 @@ function applyConfigToUI(cfg: AppConfig) {
   setCheckbox("cfgAutoFf", cfg.ff_reminder ?? false);
   ffTime = cfg.ff_time_aram || cfg.ff_time_mayhem || "08:00";
   setTextInput("cfgFfTime", ffTime);
+  setRangeValue("cfgFfLead", cfg.ff_lead_sec ?? 0);
+  setRangeValue("cfgBenchRetryMs", cfg.bench_retry_interval_ms ?? 80);
+  setRangeValue("cfgManualSnipeMs", cfg.manual_snipe_interval_ms ?? 120);
   setCheckbox("cfgFfCooldownReminder", cfg.ff_cooldown_reminder ?? false);
   setChkValues(
     "cfgFfMethods",
@@ -1996,27 +2689,43 @@ function applyConfigToUI(cfg: AppConfig) {
   const aramProfile = Array.isArray(cfg.aram_profile) ? cfg.aram_profile : [];
   const mayhemProfile = Array.isArray(cfg.mayhem_profile) ? cfg.mayhem_profile : [];
   const chosenProfile = richerProfile(aramProfile, mayhemProfile);
-  if (chosenProfile.length > 0) {
-    let totalMatches = 0;
-    profileList = chosenProfile
-      .filter((p) => p.id > 0 && p.id < 10000)
-      .map((p) => {
-        if (typeof p.elo === "number" && Number.isFinite(p.elo)) eloMap[p.id] = p.elo;
-        if (typeof p.matches === "number" && Number.isFinite(p.matches)) {
-          pkComparisonsMap[p.id] = p.matches;
-          totalMatches += p.matches;
-        }
-        return {
-          id: p.id,
-          n: p.name,
-          t: p.tier,
-          f: p.flag,
-          secSpell: isSupportedSecondarySpell(p.secondary_spell) ? p.secondary_spell : undefined,
-        };
-      });
-    battleRoundCount = Math.max(1, Math.floor(totalMatches / 2) + 1);
-  }
+  // The incoming config is the whole truth: weights and roster from a previous
+  // account (or a previous load) must never survive into this one.
+  replaceWeights(eloMap, {});
+  replaceWeights(pkComparisonsMap, {});
+  profileList =
+    chosenProfile.length > 0
+      ? chosenProfile
+          .filter((p) => p.id > 0 && p.id < 10000)
+          .map((p) => {
+            if (typeof p.elo === "number" && Number.isFinite(p.elo)) eloMap[p.id] = p.elo;
+            if (typeof p.matches === "number" && Number.isFinite(p.matches)) {
+              pkComparisonsMap[p.id] = p.matches;
+            }
+            return {
+              id: p.id,
+              n: typeof p.name === "string" ? p.name : "",
+              t: TIER_NAMES.includes(p.tier) ? p.tier : "未分類",
+              f: FLAGS.includes(p.flag) ? p.flag : "",
+              secSpell: isSupportedSecondarySpell(p.secondary_spell) ? p.secondary_spell : undefined,
+            };
+          })
+      : createDefaultRoster();
   ensureAllBuiltinChampions(profileList);
+  // Blank names (hand-edited files) fall back to the built-in name.
+  for (const c of profileList) {
+    if (!c.n) c.n = BUILTIN_CHAMPIONS.find((b) => b.id === c.id)?.n ?? `#${c.id}`;
+  }
+
+  const normalizedSaves = normalizeSaves(cfg.ranking_saves, cfg.active_ranking_save);
+  rankingSaves = normalizedSaves.saves;
+  activeRankingSave = normalizedSaves.activeId;
+  // An old-format save (or the auto-created 存檔 1) has no items yet: take the
+  // working ranking as its first manual save so it starts clean instead of 未儲存.
+  const activeSave = rankingSaves.find((s) => s.id === activeRankingSave);
+  if (activeSave && activeSave.items.length === 0) {
+    activeSave.items = captureLive(profileList, eloMap, pkComparisonsMap);
+  }
 
   renderTiers();
   fillTradeOptions();
@@ -2024,6 +2733,7 @@ function applyConfigToUI(cfg: AppConfig) {
   renderSpellOverrideCount();
   syncFlashPool();
   syncBattlePool();
+  renderRankingSaveBar();
 }
 
 function normalizeAcceptModes(value: unknown): string[] {
@@ -2080,10 +2790,7 @@ function updateConnectionUI(connected: boolean, port?: number) {
       pill.innerHTML = `<i class="dot"></i>等待客戶端...`;
     }
   }
-  if (connected) {
-    updateMatchStatusBadge(`LCU 已連線 (${port || "OK"})`, "on");
-  } else {
-    updateMatchStatusBadge("等待客戶端", "warn");
+  if (!connected) {
     const phase = document.getElementById("overviewPhase");
     if (phase) phase.innerHTML = `<i></i><em>等待連線</em>`;
   }
@@ -2102,22 +2809,29 @@ function updateAccountPill(account: ActiveAccount | null) {
   pill.innerHTML = `<i class="dot"></i>${escapeHtml(account.display_name || "帳號")}`;
 }
 
-function mergeLcuChampions(target: TierChampion[], champs: ChampionItem[]) {
+/** Merge LCU names and new champions into `target`; returns whether anything changed. */
+function mergeLcuChampions(target: TierChampion[], champs: ChampionItem[]): boolean {
   const byId = new Map(target.map((c) => [c.id, c]));
   const seen = new Set<number>();
+  let changed = false;
   for (const item of champs) {
     if (!(item.id > 0 && item.id < 10000) || seen.has(item.id)) continue;
     seen.add(item.id);
     const existing = byId.get(item.id);
     if (existing) {
       // Update the localized name in place so the user's ordering is preserved.
-      existing.n = item.name;
+      if (existing.n !== item.name) {
+        existing.n = item.name;
+        changed = true;
+      }
     } else {
       const fresh: TierChampion = { id: item.id, n: item.name, t: "未分類", f: "" };
       target.push(fresh);
       byId.set(item.id, fresh);
+      changed = true;
     }
   }
+  return changed;
 }
 
 async function loadChampionsFromLcu() {
@@ -2129,13 +2843,14 @@ async function loadChampionsFromLcu() {
     addLog("sys", `已載入 ${valid.length} 位繁中英雄名稱資料`, "本地 LCU 資產解析完成");
 
     // One shared ranking: keep the loaded list in sync for both modes.
-    mergeLcuChampions(profileList, valid);
+    const changed = mergeLcuChampions(profileList, valid);
 
     renderTiers();
     fillTradeOptions();
     syncFlashPool();
     syncBattlePool();
-    debouncedSaveConfig();
+    // Reconnects usually bring the same list: write only when it added or renamed something.
+    if (changed) debouncedSaveConfig();
   } catch (err) {
     console.warn("Could not fetch champions yet:", err);
   }
@@ -2183,13 +2898,6 @@ async function refreshCurrentQueueId() {
   }
 }
 
-function updateMatchStatusBadge(text: string, state: "idle" | "on" | "warn" = "idle") {
-  const el = document.getElementById("matchStatusBadge");
-  if (!el) return;
-  el.className = "right pill" + (state === "on" ? " connected" : state === "warn" ? " warn" : "");
-  el.innerHTML = `<i class="dot"></i>${escapeHtml(text)}`;
-}
-
 function signedDiff(diff: number | null): string {
   if (diff == null) return "—";
   return `${diff >= 0 ? "+" : ""}${diff}`;
@@ -2208,6 +2916,7 @@ const TRADE_VERDICT_DEFAULT = "條件外或組排好友設為手動時，由你�
 let champUiState: ChampSelectUiState = { ...EMPTY_UI_STATE };
 let lastChampSelectData: any = null;
 let overviewMyChampId = 0;
+let ovSpellTrayOpen = false;
 
 function isAlliedMember(member: any): boolean {
   if (!member) return false;
@@ -2224,12 +2933,7 @@ function effectiveSecondarySpell(myChamp: TierChampion | undefined): number {
   return isSupportedSecondarySpell(fallback) ? fallback : DEFAULT_SECONDARY_SPELL_ID;
 }
 
-function renderMyChampColumn(
-  myChampId: number,
-  myChamp: TierChampion | undefined,
-  myScore: number | null,
-  _benchDiff: number
-) {
+function renderMyChampColumn(myChampId: number, myChamp: TierChampion | undefined, myScore: number | null) {
   const el = document.getElementById("miniMyChamp");
   if (!el) return;
   const name = myChamp?.n || (myChampId > 0 ? `ID:${myChampId}` : "—");
@@ -2238,7 +2942,6 @@ function renderMyChampColumn(
     champUiState.manual_hold_champ_id != null &&
     champUiState.manual_hold_champ_id === myChampId;
   const locked = myChamp?.f === "lock";
-  // Overview is read-only: spells are display-only here; editing lives in 設定.
   const avatar = myChampId > 0 ? img(myChampId, name) : `<span class="ph">?</span>`;
   const tag =
     myChampId > 0 && held
@@ -2260,15 +2963,31 @@ function renderMyChampColumn(
     ${tag ? `<div class="hero-tag">${tag}</div>` : ""}`;
 }
 
-/** Display-only spell chips for the overview (editing lives in 設定). */
+/**
+ * Secondary spell chips for the overview: Flash slot plus clickable 鬼步 / 雪球 and a「⋯」tray
+ * with the remaining spells. The effective secondary (champion memory or mode default) is marked
+ * selected. Picking one writes the champion memory — see pickSecondarySpell.
+ */
 function renderOverviewSpells(myChamp: TierChampion | undefined): string {
   const secId = effectiveSecondarySpell(myChamp);
   const primaryKey = primarySpellKeyFromUI();
-  const flashId = FLASH_SPELL_ID;
-  const spell = (id: number, key: string) =>
-    `<span class="spell">${spellIconHtml(id)}<span class="key">${key}</span></span>`;
-  const flashInPrimary = primaryKey === "D";
-  return `<div class="spells">${flashInPrimary ? spell(flashId, "D") + spell(secId, "F") : spell(secId, "D") + spell(flashId, "F")}</div>`;
+  const secKey = primaryKey === "F" ? "D" : "F";
+  const extraSelected = EXTRA_SECONDARY_SPELL_IDS.includes(secId) ? secId : null;
+  const pick = (id: number) => {
+    const on = secId === id;
+    return `<button class="spell${on ? " on" : ""}" data-pick-spell="${id}" title="${escapeHtml(
+      `${secKey} 鍵帶${spellName(id)}（點擊立即切換並記住此英雄偏好）`
+    )}">${spellIconHtml(id)}${on ? `<span class="key">${secKey}</span>` : ""}</button>`;
+  };
+  // Collapsed, an extra secondary is shown on the toggle chip so it stays visible as selected.
+  const collapsedExtra = extraSelected != null && !ovSpellTrayOpen;
+  const moreBtn = `<button class="spell more${collapsedExtra ? " on" : ""}" data-toggle-more-spells="1" title="${escapeHtml(
+    collapsedExtra ? `其他召喚師技能（目前：${spellName(extraSelected)}）` : "展開其他召喚師技能"
+  )}">${collapsedExtra ? `${spellIconHtml(extraSelected)}<span class="key">${secKey}</span>` : "⋯"}</button>`;
+  const extras = ovSpellTrayOpen ? EXTRA_SECONDARY_SPELL_IDS.map(pick).join("") : "";
+  const flash = `<span class="spell">${spellIconHtml(FLASH_SPELL_ID)}<span class="key">${primaryKey}</span></span>`;
+
+  return `<div class="spells">${flash}${MAIN_SECONDARY_SPELL_IDS.map(pick).join("")}${moreBtn}${extras}</div>`;
 }
 
 function renderBenchColumn(
@@ -2299,46 +3018,44 @@ function renderBenchColumn(
       e.score - baseScore >= benchDiff
   );
   const bestId = eligible.length ? eligible[0].id : null;
-  const best = eligible.length ? eligible[0] : null;
 
   const rows = entries
     .map((e) => {
       const name = e.champ?.n || `ID:${e.id}`;
       const diff = e.score != null && baseScore != null ? e.score - baseScore : null;
       const retrying = champUiState.bench_retry_target === e.id;
-      const swappedIn = myChampIdGlobal() === e.id;
-      const hot = e.id === bestId && !swappedIn;
-      const manual = hot && myChampIdGlobal() > 0;
-      return `<div class="bench-row${hot ? " hot" : ""}"${
-        manual ? ` data-swap-bench="${e.id}" title="點擊手動換上" style="cursor:pointer"` : ""
-      }>${img(
+      const hot = e.id === bestId;
+      // 封印 / nograb champions are never grabbed; everything else is a manual candidate.
+      const blocked = e.champ?.t === "封印" || e.champ?.f === "nograb";
+      const grabbable = !blocked && !retrying && overviewMyChampId > 0;
+      const action = blocked
+        ? `<span class="ban">不搶</span>`
+        : retrying
+          ? `<span class="grabbing">搶角中…</span>`
+          : grabbable
+            ? `<button class="grab" data-swap-bench="${e.id}" title="點擊手動換上">搶角</button>`
+            : "";
+      return `<div class="bench-row${hot ? " hot" : ""}">${img(
         e.id,
         name
       )}
         <span class="nm">${escapeHtml(name)}</span>
-        ${hot ? `<span class="will">${retrying ? "搶角中…" : "會換入"}</span>` : ""}
         <span class="delta">${signedDiff(diff)}</span>
+        ${action}
       </div>`;
     })
     .join("");
 
-  const caption = best
-    ? `${escapeHtml(best.champ?.n || `ID:${best.id}`)}高於手上 ${signedDiff(best.score != null && baseScore != null ? best.score - baseScore : null)}（門檻 ${benchDiff}）`
-    : champUiState.bench_verdict
-      ? escapeHtml(champUiState.bench_verdict)
-      : entries.length > 0
-        ? `未達門檻（${benchDiff}），不會自動換入`
-        : `還沒進選角`;
+  const caption = champUiState.bench_verdict
+    ? escapeHtml(champUiState.bench_verdict)
+    : entries.length > 0
+      ? `未達門檻（${benchDiff}），不會自動換入`
+      : `還沒進選角`;
 
   el.innerHTML = `
     <h3>板凳<span class="sub">依權重排序</span></h3>
     <div class="bench-list">${rows || `<div class="ov-empty">板凳還沒解鎖</div>`}</div>
     <div class="bench-cap">${caption}</div>`;
-}
-
-// Overview column index passed via renderOverviewColumns (avoids extra params).
-function myChampIdGlobal(): number {
-  return overviewMyChampId;
 }
 
 function renderTradeColumn(
@@ -2419,7 +3136,7 @@ function renderOverviewColumns() {
   const bench: any[] = Array.isArray(data?.benchChampions) ? data.benchChampions : [];
 
   overviewMyChampId = myChampId;
-  renderMyChampColumn(myChampId, myChamp, myScore, benchDiff);
+  renderMyChampColumn(myChampId, myChamp, myScore);
   renderBenchColumn(bench, profile, scores, baseScore, benchDiff);
   renderTradeColumn(data, profile, scores, myChampId, baseScore, tradeDiff);
 }
@@ -2428,12 +3145,70 @@ document.getElementById("miniBench")?.addEventListener("click", (e) => {
   const btn = (e.target as HTMLElement).closest("[data-swap-bench]") as HTMLElement | null;
   if (!btn || btn.hasAttribute("disabled")) return;
   const championId = Number(btn.dataset.swapBench);
+  // A retry in flight for the same champion must not fire a second swap request.
+  if (champUiState.bench_retry_target === championId) return;
   if (championId > 0) {
     // The backend owns the bounded retry loop and logs every outcome itself.
     invoke("swap_bench_champion", { championId }).catch((err) =>
       addLog("err", "手動搶板凳失敗", String(err))
     );
   }
+});
+
+/** Remember the secondary spell for the held champion and push it to LCU right away. */
+async function pickSecondarySpell(pickedId: number) {
+  if (!isSupportedSecondarySpell(pickedId)) return;
+  const myChampId = overviewMyChampId;
+  const champ = myChampId > 0 ? profileList.find((c) => c.id === myChampId) : undefined;
+  const modeDefault = currentSettings.default_secondary_spell;
+  const defaultSpell = isSupportedSecondarySpell(modeDefault) ? modeDefault : DEFAULT_SECONDARY_SPELL_ID;
+
+  let secId = pickedId;
+  let isCustom = false;
+  let champName = "";
+  if (myChampId > 0 && champ) {
+    // Matching the default clears the override so the champion stays "預設".
+    champ.secSpell = pickedId === defaultSpell ? undefined : pickedId;
+    isCustom = isSupportedSecondarySpell(champ.secSpell);
+    secId = isCustom ? champ.secSpell! : defaultSpell;
+    champName = champ.n;
+  } else {
+    currentSettings.default_secondary_spell = pickedId;
+    secId = pickedId;
+    renderDefaultSpellPicker();
+  }
+
+  ovSpellTrayOpen = false;
+  // Persist to Rust BEFORE calling apply_summoner_spells so the ensuing LCU WebSocket
+  // event never reads a stale config and reverts our newly chosen spell!
+  await saveConfigImmediate();
+
+  if (isLcuConnected && lastKnownPhase === "ChampSelect") {
+    const [spell1Id, spell2Id] = resolveSpellPair(secId, primarySpellKeyFromUI());
+    const label = `${champName ? `【${champName}】` : ""}D ${spellName(spell1Id)} ＋ F ${spellName(
+      spell2Id
+    )}（${isCustom ? "英雄專屬記憶" : "模式預設"}）`;
+    try {
+      await invoke("apply_summoner_spells", { spell1Id, spell2Id, label });
+    } catch (err) {
+      addLog("err", "切換召喚師技能失敗", String(err));
+    }
+  }
+
+  renderOverviewColumns();
+  renderSpellOverrideCount();
+}
+
+document.getElementById("miniMyChamp")?.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest("[data-toggle-more-spells]")) {
+    ovSpellTrayOpen = !ovSpellTrayOpen;
+    renderOverviewColumns();
+    return;
+  }
+  const pick = target.closest("[data-pick-spell]") as HTMLElement | null;
+  if (!pick) return;
+  void pickSecondarySpell(Number(pick.dataset.pickSpell));
 });
 
 document.getElementById("tradeAlert")?.addEventListener("click", (e) => {
@@ -2464,11 +3239,12 @@ function resetOverviewMiniCards() {
   renderOverviewColumns();
 }
 
-async function syncLivePhaseAndSession() {
+/** Sync the phase (and queue label); `withSession` also pulls the champ select state, for a fresh connection. */
+async function syncLivePhaseAndSession(withSession: boolean) {
   try {
     const phase = await invoke<string | null>("get_gameflow_phase");
     await updateGameflowPhase(phase || "None");
-    if (phase === "ChampSelect") {
+    if (withSession && phase === "ChampSelect") {
       // Reconnecting mid-champ-select: adopt the backend verdicts before rendering.
       try {
         const state = await invoke<ChampSelectUiState>("get_champ_select_ui_state");
@@ -2505,7 +3281,6 @@ async function updateGameflowPhase(phase: string) {
 
   // The queue id can change between phases, so resolve it before labelling the phase.
   await refreshCurrentQueueId();
-  updateOverviewModeSub();
 
   const modeLabel = currentModeLabel();
   const phaseLabel = PHASE_LABELS[phase] || phase;
@@ -2513,32 +3288,34 @@ async function updateGameflowPhase(phase: string) {
   // Single phase indicator lives in the overview header (titlebar keeps only
   // the connection pill now).
   const phaseNow = document.getElementById("overviewPhase");
-  if (phaseNow) phaseNow.innerHTML = `<i></i><em>${phaseLabel} · ${modeLabel}</em>`;
+  if (phaseNow) phaseNow.innerHTML = `<i></i><em>${escapeHtml(phaseLabel)} · ${escapeHtml(modeLabel)}</em>`;
 
   const stepOrder = ["Lobby", "Matchmaking", "ReadyCheck", "ChampSelect", "InProgress"];
   // When connected to the LoL client home screen ("None") or room ("Lobby"), light up "大廳" (index 0).
-  const normalizedPhase = isLcuConnected && (phase === "None" || phase === "") ? "Lobby" : phase;
-  const currentIdx = stepOrder.indexOf(normalizedPhase);
+  // In-game sub-phases light "遊戲中"; post-game phases mark every step done.
+  const IN_GAME_PHASES = ["GameStart", "InProgress", "Reconnect"];
+  const POST_GAME_PHASES = ["WaitingForStats", "PreEndOfGame", "EndOfGame"];
+  const normalizedPhase = isLcuConnected && (phase === "None" || phase === "")
+    ? "Lobby"
+    : IN_GAME_PHASES.includes(phase) ? "InProgress" : phase;
+  const currentIdx = POST_GAME_PHASES.includes(phase) ? stepOrder.length : stepOrder.indexOf(normalizedPhase);
   stepOrder.forEach((stepPhase, idx) => {
     const el = document.getElementById(`st-${stepPhase}`);
     if (!el) return;
     el.classList.toggle("done", currentIdx > idx);
     el.classList.toggle("now", currentIdx === idx);
   });
+  // Same phase mapping drives the label row under the bar.
+  document.querySelectorAll<HTMLElement>(".plabels span").forEach((el, idx) => {
+    el.classList.toggle("now", currentIdx === idx);
+  });
   if (phase !== "ChampSelect") {
     resetOverviewMiniCards();
   }
 
-  updateMatchStatusBadge(`${phaseLabel} · ${modeLabel}`, isLcuConnected ? "on" : "idle");
-
   if (phaseChanged) {
     addLog("sys", `遊戲流程階段變更：${phase}`, "Gameflow Phase");
   }
-}
-
-function updateOverviewModeSub() {
-  // Mode is shown in the header phase indicator now; nothing to narrate here.
-  return;
 }
 
 function notifyAccept() {
