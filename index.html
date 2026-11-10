@@ -347,9 +347,14 @@
               <div class="spell-picker" id="cfgDefaultSpellPicker"></div>
             </div>
             <div class="set-row">
-              <span class="set-lab">英雄專屬副技能記憶</span>
-              <div style="display:flex;align-items:center;gap:10px"><span class="set-val" id="spellOverrideCountText">已記憶 0 位</span><button class="btn" id="btnResetSpellOverrides">清除個別記憶</button><label class="sw" title="關閉後一律用預設副技能，選角時點的副技能只套用這一場"><input type="checkbox" checked id="cfgRememberSpells"><i></i></label></div>
+              <span class="set-lab">自動記住每隻英雄的副技能</span>
+              <label class="sw" title="關閉後一律用預設副技能，選角時點的副技能只套用這一場"><input type="checkbox" checked id="cfgRememberSpells"><i></i></label>
             </div>
+            <div class="set-row spell-mem-head">
+              <button class="spell-mem-toggle" id="btnToggleSpellMemList" aria-expanded="false"><span id="spellOverrideCountText">已記憶 0 位</span><span class="chev">▸</span></button>
+              <button class="btn" id="btnResetSpellOverrides">全部清除</button>
+            </div>
+            <div class="spell-mem-list" id="spellMemList" hidden></div>
           </div>
           <div class="hint">鬼步與雪球常駐，點「⋯ 其他」可選清晰、虛弱、點燃、光盾、治癒、淨化；選角時在總覽點技能晶片即記憶</div>
         </div>

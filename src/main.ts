@@ -499,16 +499,55 @@ function renderDefaultSpellPicker() {
     `<div class="spell-tray${defaultSpellTrayOpen ? " open" : ""}">${tray}</div>`;
 }
 
+let spellMemListOpen = false;
+
+/** Count line, expandable list of remembered champions, and the clear-all button state. */
 function renderSpellOverrideCount() {
   const el = document.getElementById("spellOverrideCountText");
   if (!el) return;
-  const list = profileList;
-  const count = list.filter((c) => isSupportedSecondarySpell(c.secSpell)).length;
+  const remembered = profileList
+    .filter((c) => isSupportedSecondarySpell(c.secSpell))
+    .sort((a, b) => a.n.localeCompare(b.n, "zh-Hant"));
   el.textContent =
-    count > 0
-      ? `目前已記憶 ${count} 位英雄的專屬副技能（在總覽選角時點選副技能即自動記憶）`
-      : "目前已記憶 0 位英雄的專屬副技能（在總覽選角時點選副技能即自動記憶）";
+    remembered.length > 0 ? `已記住 ${remembered.length} 位英雄` : "還沒有記住任何英雄（在總覽選角時點副技能就會記住）";
+  const toggle = document.getElementById("btnToggleSpellMemList");
+  const reset = document.getElementById("btnResetSpellOverrides") as HTMLButtonElement | null;
+  const listEl = document.getElementById("spellMemList");
+  if (remembered.length === 0) spellMemListOpen = false;
+  toggle?.classList.toggle("empty", remembered.length === 0);
+  toggle?.setAttribute("aria-expanded", String(spellMemListOpen));
+  if (reset) reset.disabled = remembered.length === 0;
+  if (!listEl) return;
+  listEl.hidden = !spellMemListOpen;
+  listEl.innerHTML = remembered
+    .map(
+      (c) => `<div class="spell-mem-row">${img(c.id, c.n)}<span class="nm">${escapeHtml(c.n)}</span>${spellIconHtml(
+        c.secSpell!
+      )}<span class="sp">${escapeHtml(spellName(c.secSpell!))}</span><button class="btn mini" data-forget-spell="${
+        c.id
+      }" title="刪除這筆，改回預設副技能">刪除</button></div>`
+    )
+    .join("");
 }
+
+document.getElementById("btnToggleSpellMemList")?.addEventListener("click", () => {
+  if (!profileList.some((c) => isSupportedSecondarySpell(c.secSpell))) return;
+  spellMemListOpen = !spellMemListOpen;
+  renderSpellOverrideCount();
+});
+
+document.getElementById("spellMemList")?.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest("[data-forget-spell]") as HTMLElement | null;
+  if (!btn) return;
+  const champ = profileList.find((c) => c.id === Number(btn.dataset.forgetSpell));
+  if (!champ || champ.secSpell == null) return;
+  const was = spellName(champ.secSpell);
+  champ.secSpell = undefined;
+  renderSpellOverrideCount();
+  renderOverviewColumns();
+  debouncedSaveConfig();
+  addLog("act", "已刪除英雄副技能記憶", `【${champ.n}】原本記住 ${was}，改回預設副技能`);
+});
 
 document.getElementById("cfgDefaultSpellPicker")?.addEventListener("click", (e) => {
   const target = e.target as HTMLElement;

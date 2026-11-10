@@ -488,3 +488,21 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .confirm-box { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
 .confirm-box h3 { margin: 0; font-size: 15px; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* Remembered per-champion secondary spells (settings) */
+.spell-mem-toggle { background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 0; }
+.spell-mem-toggle:hover { color: var(--text); }
+.spell-mem-toggle .chev { transition: transform .15s; font-size: 11px; }
+.spell-mem-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.spell-mem-toggle.empty { cursor: default; }
+.spell-mem-toggle.empty .chev { display: none; }
+.spell-mem-toggle.empty:hover { color: var(--muted); }
+.spell-mem-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; padding: 4px 0 8px; }
+.spell-mem-list[hidden] { display: none; }
+.spell-mem-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; font-size: 13px; }
+.spell-mem-row:hover { background: var(--panel2); }
+.spell-mem-row > img:first-child { width: 24px; height: 24px; border-radius: 5px; }
+.spell-mem-row .nm { flex: 1; }
+.spell-mem-row .spell-ic { width: 20px; height: 20px; border-radius: 4px; }
+.spell-mem-row .sp { color: var(--muted); min-width: 40px; }
+.btn.mini { padding: 2px 8px; font-size: 11px; }
