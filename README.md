@@ -2,7 +2,7 @@
 
 《英雄聯盟》ARAM 與 ARAM: Mayhem 的選角助手（Windows）。只用客戶端在本機開放的官方 API，不讀遊戲記憶體、不模擬按鍵。
 
-*A Windows champ-select assistant for League of Legends ARAM and ARAM: Mayhem. It only talks to the client's local API: no memory reading, no input simulation.*
+*A Windows champ-select assistant for League of Legends ARAM and ARAM: Mayhem. It only talks to the client's local API: no memory reading, no input simulation. The interface is in Traditional Chinese only.*
 
 ![英雄排序畫面](docs/screenshot-hero.png)
 
@@ -25,11 +25,16 @@
 
 ## 下載與安裝
 
-安裝檔還沒發布，發布後會放在 [Releases](../../releases)。
+到 [Releases](../../releases/latest) 下載 `ARAMPilot_<版本>_x64-setup.exe`，執行後照畫面安裝。
 
 - 需求：Windows 10／11，需要 WebView2（Windows 11 內建）。
+- 不需要管理員權限，只裝在你自己的使用者帳號底下。
 - 安裝檔沒有程式碼簽章，Windows SmartScreen 會跳出「Windows 已保護您的電腦」：按「其他資訊 → 仍要執行」。
 - 想自己編譯，見下方「開發」。
+
+### 更新
+
+App 啟動時會自動檢查新版，也可以在「設定 → 版本與更新」手動檢查。有新版時按「立即更新」，App 會自己下載、安裝並重新開啟，設定和排序都會保留。更新檔有簽章，簽章不符時不會安裝。
 
 ## 使用方式
 
