@@ -161,6 +161,8 @@ pub struct AppConfig {
 
     // Summoner spells
     pub auto_summoner_spells: bool,
+    /// Remember the secondary spell picked per champion; off = always the mode default.
+    pub remember_champion_spells: bool,
     pub primary_spell_key: String, // "D" or "F"
 
     // Matchmaking
@@ -234,6 +236,7 @@ impl Default for AppConfig {
             master_enabled: true,
             accent_color: "ivory".to_string(),
             auto_summoner_spells: true,
+            remember_champion_spells: true,
             primary_spell_key: "D".to_string(),
             auto_accept: true,
             accept_delay_sec: 2.0,
@@ -1128,6 +1131,15 @@ mod tests {
     }
 
     #[test]
+    fn test_old_config_without_spell_memory_switch_keeps_memory_on() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"auto_summoner_spells": true}"#).unwrap();
+        assert!(cfg.remember_champion_spells);
+        let off: AppConfig =
+            serde_json::from_str(r#"{"remember_champion_spells": false}"#).unwrap();
+        assert!(!off.remember_champion_spells);
+    }
+
+    #[test]
     fn test_app_config_default_values() {
         let cfg = AppConfig::default();
         assert!(cfg.master_enabled);
@@ -1315,6 +1327,7 @@ mod tests {
     fn test_summoner_spell_defaults() {
         let cfg = AppConfig::default();
         assert!(cfg.auto_summoner_spells, "auto summoner spells is on by default");
+        assert!(cfg.remember_champion_spells, "per-champion spell memory is on by default");
         assert_eq!(cfg.primary_spell_key, "D", "Flash goes on D by default");
         assert_eq!(cfg.aram_settings.default_secondary_spell, 6, "Ghost by default");
         assert_eq!(cfg.mayhem_settings.default_secondary_spell, 6);

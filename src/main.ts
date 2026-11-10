@@ -93,6 +93,7 @@ interface AppConfig {
   master_enabled: boolean;
   accent_color: string;
   auto_summoner_spells: boolean;
+  remember_champion_spells?: boolean;
   primary_spell_key: string; // "D" | "F"
   auto_accept: boolean;
   accept_delay_sec: number;
@@ -676,6 +677,7 @@ const SAVE_ON_CHANGE_IDS = [
   "cfgFfCooldownReminder",
   "cfgCloseToTray",
   "cfgAutoStart",
+  "cfgRememberSpells",
 ];
 SAVE_ON_CHANGE_IDS.forEach((id) => {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -686,6 +688,9 @@ SAVE_ON_CHANGE_IDS.forEach((id) => {
   el.addEventListener("change", handler);
   el.addEventListener("input", handler);
 });
+
+// Memory on/off changes which secondary spell the overview shows.
+document.getElementById("cfgRememberSpells")?.addEventListener("change", () => renderOverviewColumns());
 
 /* ---------- Champions & Tiers Data ---------- */
 const UNRANKED_BASELINE_SCORE = 40;
@@ -2459,6 +2464,7 @@ function collectConfig(): AppConfig {
     master_enabled: checkboxValue("master", true),
     accent_color: localStorage.getItem("app-accent") || "ivory",
     auto_summoner_spells: checkboxValue("cfgAutoSpells", true),
+    remember_champion_spells: checkboxValue("cfgRememberSpells", true),
     primary_spell_key: primarySpellKeyFromUI(),
     auto_accept: checkboxValue("cfgAutoAccept", true),
     accept_delay_sec: numberValue("cfgAcceptDelay", 2),
@@ -2662,6 +2668,7 @@ function applyConfigToUI(cfg: AppConfig) {
 
   setCheckbox("master", cfg.master_enabled ?? true);
   setCheckbox("cfgAutoSpells", cfg.auto_summoner_spells ?? true);
+  setCheckbox("cfgRememberSpells", cfg.remember_champion_spells ?? true);
   setSegValue("cfgPrimarySpellKey", (cfg.primary_spell_key || "D").toUpperCase() === "F" ? "F" : "D");
   setCheckbox("cfgAutoAccept", cfg.auto_accept ?? true);
   setRangeValue("cfgAcceptDelay", cfg.accept_delay_sec ?? 2);
@@ -2946,7 +2953,7 @@ function isAlliedMember(member: any): boolean {
 }
 
 function effectiveSecondarySpell(myChamp: TierChampion | undefined): number {
-  const remembered = myChamp?.secSpell;
+  const remembered = checkboxValue("cfgRememberSpells", true) ? myChamp?.secSpell : undefined;
   if (isSupportedSecondarySpell(remembered)) return remembered;
   const fallback = currentSettings.default_secondary_spell;
   return isSupportedSecondarySpell(fallback) ? fallback : DEFAULT_SECONDARY_SPELL_ID;
@@ -3185,7 +3192,11 @@ async function pickSecondarySpell(pickedId: number) {
   let secId = pickedId;
   let isCustom = false;
   let champName = "";
-  if (myChampId > 0 && champ) {
+  if (myChampId > 0 && champ && !checkboxValue("cfgRememberSpells", true)) {
+    // Memory off: apply for this game only, keep stored memories untouched.
+    secId = pickedId;
+    champName = champ.n;
+  } else if (myChampId > 0 && champ) {
     // Matching the default clears the override so the champion stays "預設".
     champ.secSpell = pickedId === defaultSpell ? undefined : pickedId;
     isCustom = isSupportedSecondarySpell(champ.secSpell);

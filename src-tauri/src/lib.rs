@@ -1765,9 +1765,15 @@ async fn handle_champ_select_event(
     // (per-champion memory first, mode default otherwise).
     // Never overwrite if the player manually changed spells in the client this session!
     if config.auto_summoner_spells && my_champ_id > 0 && !tr.manual_spell_override {
+        // Memory off: resolve against no per-champion entries so the mode default wins.
+        let memory: &[config::ChampionProfileItem] = if config.remember_champion_spells {
+            profile
+        } else {
+            &[]
+        };
         let (spell1_id, spell2_id, _secondary_id, is_custom) = engine::resolve_summoner_spells(
             my_champ_id,
-            profile,
+            memory,
             settings,
             &config.primary_spell_key,
         );
