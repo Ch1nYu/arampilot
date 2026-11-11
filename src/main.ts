@@ -21,6 +21,7 @@ import {
   type RankingSave,
   type RankingSaveItem,
 } from "./rankingSaves";
+import { state } from "./state";
 import { escapeHtml, ICON, img } from "./html";
 import { addLog, initLogFilter, pad2 } from "./logs";
 import { choiceDialog, confirmDialog, promptDialog } from "./dialogs";
@@ -38,7 +39,6 @@ import {
   textValue,
 } from "./formControls";
 import {
-  defaultModeSettings,
   normalizeAcceptModes,
   normalizeModeSettings,
   REJECT_TIER_VALUES,
@@ -151,7 +151,6 @@ document.addEventListener("click", (e) => {
 initFormControls(debouncedSaveConfig);
 
 /* ---------- Shared Mode Settings (ARAM + Mayhem) ---------- */
-let currentSettings: ModeSettings = defaultModeSettings();
 let ffTime = "08:00";
 
 /**
@@ -189,8 +188,8 @@ function readModeSettingsFromUI(): ModeSettings {
     trade_accept_diff: numberValue("thAccept", 10),
     trade_reject_tiers: REJECT_TIER_VALUES[reject] ?? ["本命"],
     friend_trade_policy: activeSegValue("friendTradePolicy") || "manual",
-    default_secondary_spell: isSupportedSecondarySpell(currentSettings.default_secondary_spell)
-      ? currentSettings.default_secondary_spell
+    default_secondary_spell: isSupportedSecondarySpell(state.currentSettings.default_secondary_spell)
+      ? state.currentSettings.default_secondary_spell
       : DEFAULT_SECONDARY_SPELL_ID,
   };
 }
@@ -218,7 +217,7 @@ function writeModeSettingsToUI(s: ModeSettings) {
 let defaultSpellTrayOpen = false;
 
 function currentDefaultSecondarySpell(): number {
-  const id = currentSettings.default_secondary_spell;
+  const id = state.currentSettings.default_secondary_spell;
   return isSupportedSecondarySpell(id) ? id : DEFAULT_SECONDARY_SPELL_ID;
 }
 
@@ -256,7 +255,7 @@ let spellMemListOpen = false;
 function renderSpellOverrideCount() {
   const el = document.getElementById("spellOverrideCountText");
   if (!el) return;
-  const remembered = profileList
+  const remembered = state.profileList
     .filter((c) => isSupportedSecondarySpell(c.secSpell))
     .sort((a, b) => a.n.localeCompare(b.n, "zh-Hant"));
   el.textContent =
@@ -282,7 +281,7 @@ function renderSpellOverrideCount() {
 }
 
 document.getElementById("btnToggleSpellMemList")?.addEventListener("click", () => {
-  if (!profileList.some((c) => isSupportedSecondarySpell(c.secSpell))) return;
+  if (!state.profileList.some((c) => isSupportedSecondarySpell(c.secSpell))) return;
   spellMemListOpen = !spellMemListOpen;
   renderSpellOverrideCount();
 });
@@ -290,7 +289,7 @@ document.getElementById("btnToggleSpellMemList")?.addEventListener("click", () =
 document.getElementById("spellMemList")?.addEventListener("click", (e) => {
   const btn = (e.target as HTMLElement).closest("[data-forget-spell]") as HTMLElement | null;
   if (!btn) return;
-  const champ = profileList.find((c) => c.id === Number(btn.dataset.forgetSpell));
+  const champ = state.profileList.find((c) => c.id === Number(btn.dataset.forgetSpell));
   if (!champ || champ.secSpell == null) return;
   const was = spellName(champ.secSpell);
   champ.secSpell = undefined;
@@ -311,13 +310,13 @@ document.getElementById("cfgDefaultSpellPicker")?.addEventListener("click", (e) 
   if (!pick) return;
   const id = Number(pick.dataset.pickDefaultSpell);
   if (!isSupportedSecondarySpell(id)) return;
-  currentSettings.default_secondary_spell = id;
+  state.currentSettings.default_secondary_spell = id;
   defaultSpellTrayOpen = false;
   renderDefaultSpellPicker();
   renderOverviewColumns();
   void (async () => {
     await saveConfigImmediate();
-    if (isLcuConnected && lastKnownPhase === "ChampSelect") {
+    if (state.isLcuConnected && state.lastKnownPhase === "ChampSelect") {
       const [spell1Id, spell2Id] = resolveSpellPair(id, primarySpellKeyFromUI());
       const label = `D ${spellName(spell1Id)} ＋ F ${spellName(spell2Id)}（模式預設更新）`;
       await invoke("apply_summoner_spells", { spell1Id, spell2Id, label }).catch((err) =>
@@ -331,8 +330,8 @@ document.getElementById("cfgPrimarySpellKey")?.addEventListener("change", () => 
   renderOverviewColumns();
   void (async () => {
     await saveConfigImmediate();
-    if (isLcuConnected && lastKnownPhase === "ChampSelect") {
-      const profile = profileList;
+    if (state.isLcuConnected && state.lastKnownPhase === "ChampSelect") {
+      const profile = state.profileList;
       const myChamp = overviewMyChampId > 0 ? profile.find((c) => c.id === overviewMyChampId) : undefined;
       const secId = effectiveSecondarySpell(myChamp);
       const [spell1Id, spell2Id] = resolveSpellPair(secId, primarySpellKeyFromUI());
@@ -345,7 +344,7 @@ document.getElementById("cfgPrimarySpellKey")?.addEventListener("change", () => 
 });
 
 document.getElementById("btnResetSpellOverrides")?.addEventListener("click", () => {
-  const list = profileList;
+  const list = state.profileList;
   let cleared = 0;
   list.forEach((c) => {
     if (c.secSpell != null) {
@@ -483,10 +482,9 @@ SAVE_ON_CHANGE_IDS.forEach((id) => {
 document.getElementById("cfgRememberSpells")?.addEventListener("change", () => renderOverviewColumns());
 
 /* ---------- Champions & Tiers Data ---------- */
-let profileList: TierChampion[] = createDefaultRoster();
 
 function renderTiers() {
-  const list = profileList;
+  const list = state.profileList;
   const sc = calculateScores(list);
   const container = document.getElementById("tiers");
   if (!container) return;
@@ -549,7 +547,7 @@ tiersContainer?.addEventListener("drop", (e) => {
   // Dropping a chip onto itself must be a no-op instead of jumping to the tier end.
   if (targetChip && +targetChip.dataset.id! === dragId) return;
 
-  const list = profileList;
+  const list = state.profileList;
   const fromIdx = list.findIndex((c) => c.id === dragId);
   if (fromIdx < 0) return;
   const [targetItem] = list.splice(fromIdx, 1);
@@ -575,7 +573,7 @@ tiersContainer?.addEventListener("click", (e) => {
   const flagBtn = (e.target as HTMLElement).closest("[data-flag]");
   if (!flagBtn) return;
   const chip = flagBtn.closest(".chip") as HTMLElement;
-  const champion = profileList.find((x) => x.id === +chip.dataset.id!);
+  const champion = state.profileList.find((x) => x.id === +chip.dataset.id!);
   if (!champion) return;
   champion.f = FLAGS[(FLAGS.indexOf(champion.f) + 1) % FLAGS.length];
   renderTiers();
@@ -596,7 +594,7 @@ const simOffer = document.getElementById("simOffer") as HTMLSelectElement | null
 const simIsFriend = document.getElementById("simIsFriend") as HTMLSelectElement | null;
 function fillTradeOptions() {
   if (!simMine || !simOffer) return;
-  const list = profileList;
+  const list = state.profileList;
   const options = list.map((c) => `<option value="${c.id}">${escapeHtml(c.n)}</option>`).join("");
   const pick = (previous: string, preferredId: number, index: number) => {
     if (list.some((c) => String(c.id) === previous)) return previous;
@@ -613,7 +611,7 @@ function fillTradeOptions() {
 
 function renderTradeSim() {
   if (!simMine?.value || !simOffer?.value) return;
-  const list = profileList;
+  const list = state.profileList;
   const sc = calculateScores(list);
   const myChamp = list.find((c) => c.id === +simMine.value);
   const offerChamp = list.find((c) => c.id === +simOffer.value);
@@ -792,7 +790,7 @@ document.getElementById("flashScopeSeg")?.addEventListener("click", (e) => {
 });
 
 function syncFlashPool() {
-  const list = profileList;
+  const list = state.profileList;
   const total = list.length;
   const unrankedList = list.filter((c) => c.t === "未分類");
   const classifiedCount = total - unrankedList.length;
@@ -858,7 +856,7 @@ function renderFlashCard(total: number, classifiedCount: number, unrankedCount: 
 
 function classifyCurrentFlashCard(targetTier: string) {
   if (!currentFlashChampion) return;
-  const list = profileList;
+  const list = state.profileList;
   const idx = list.findIndex((c) => c.id === currentFlashChampion!.id);
   if (idx < 0) return;
 
@@ -894,7 +892,7 @@ function undoFlashCard() {
   const hist = flashUndoHistory;
   if (!hist || hist.length === 0) return;
   const last = hist.pop()!;
-  const list = profileList;
+  const list = state.profileList;
   const curIdx = list.findIndex((c) => c.id === last.id);
   if (curIdx < 0) return;
 
@@ -1075,7 +1073,7 @@ function resolvePkPool(list: TierChampion[], scope: string = pkTargetScope): Tie
 }
 
 function syncBattlePool() {
-  const list = profileList;
+  const list = state.profileList;
   battlePool = resolvePkPool(list);
 
   const elo = eloMap;
@@ -1192,7 +1190,7 @@ function reorderListByScope(list: TierChampion[], weights: (c: TierChampion) => 
 
 /** Committed live path: recompute the order from committed weights and adopt it. */
 function syncOrderFromElo() {
-  profileList = reorderListByScope(profileList, committedEloOf, pkTargetScope);
+  state.profileList = reorderListByScope(state.profileList, committedEloOf, pkTargetScope);
 }
 
 interface ApplyPreview {
@@ -1202,8 +1200,8 @@ interface ApplyPreview {
 
 /** What applying the draft would change, computed on a copy (nothing is mutated). */
 function computeApplyPreview(): ApplyPreview {
-  const next = reorderListByScope(profileList, pkEloOf, pkTargetScope);
-  const before = new Map(profileList.map((c, i) => [c.id, { pos: i + 1, tier: c.t }]));
+  const next = reorderListByScope(state.profileList, pkEloOf, pkTargetScope);
+  const before = new Map(state.profileList.map((c, i) => [c.id, { pos: i + 1, tier: c.t }]));
   const moved: ApplyPreview["moved"] = [];
   const tierChanges: ApplyPreview["tierChanges"] = [];
   next.forEach((c, i) => {
@@ -1349,7 +1347,7 @@ async function applyDraftOnce() {
   const scope = pkTargetScope;
   const votes = draftVotes;
   const snapshot: PreApplySnapshot = {
-    profile: profileList.map((c) => ({ ...c })),
+    profile: state.profileList.map((c) => ({ ...c })),
     elo: { ...eloMap },
     comp: { ...pkComparisonsMap },
     signature: "",
@@ -1363,7 +1361,7 @@ async function applyDraftOnce() {
   const saved = await saveConfigReport();
   /** Put the pre-apply order back and the votes back into a single draft. */
   const restoreDraft = () => {
-    profileList = snapshot.profile.map((c) => ({ ...c }));
+    state.profileList = snapshot.profile.map((c) => ({ ...c }));
     replaceWeights(eloMap, snapshot.elo);
     replaceWeights(pkComparisonsMap, snapshot.comp);
     draftElo = draft.elo;
@@ -1405,7 +1403,7 @@ async function applyDraftOnce() {
 
 /** Order + tier + flag + spell of every champion: detects edits made after an apply. */
 function profileSignature(): string {
-  return profileList.map((c) => `${c.id}:${c.t}:${c.f}:${c.secSpell ?? ""}`).join("|");
+  return state.profileList.map((c) => `${c.id}:${c.t}:${c.f}:${c.secSpell ?? ""}`).join("|");
 }
 
 /** The pre-apply snapshot, or null once the priority list was edited after the apply. */
@@ -1422,7 +1420,7 @@ async function revertLastApply() {
     addLog("skip", "無法復原上次套用", "套用後優先序又改過；要回到套用前請匯入 backups/ 內的備份檔");
     return;
   }
-  profileList = snapshot.profile.map((c) => ({ ...c }));
+  state.profileList = snapshot.profile.map((c) => ({ ...c }));
   replaceWeights(eloMap, snapshot.elo);
   replaceWeights(pkComparisonsMap, snapshot.comp);
   const saved = await saveConfigReport();
@@ -1598,13 +1596,11 @@ async function backupBeforeBulkEdit(reason: string, what: string): Promise<boole
 }
 
 /* ---------- Named Ranking Saves (排序存檔) ---------- */
-// The working ranking (`profileList` + `eloMap` + `pkComparisonsMap`) keeps
+// The working ranking (`state.profileList` + `eloMap` + `pkComparisonsMap`) keeps
 // auto-saving to the config file, but it is not the active save: every save,
 // the active one included, stores its own last manual save in `items`. While the
 // working ranking differs from the active save it is 未儲存, and 儲存 / 還原 move
 // it in and out by hand.
-let rankingSaves: RankingSave[] = [];
-let activeRankingSave = "";
 
 /** Save item → config item; the remembered secondary spell stays per champion. */
 function toProfileItemConfig(item: RankingSaveItem): ProfileItemConfig {
@@ -1615,25 +1611,25 @@ function toProfileItemConfig(item: RankingSaveItem): ProfileItemConfig {
 }
 
 function activeRankingSaveEntry(): RankingSave | undefined {
-  return rankingSaves.find((s) => s.id === activeRankingSave);
+  return state.rankingSaves.find((s) => s.id === state.activeRankingSave);
 }
 
 /** Fill the save bar, the 未儲存 state and the actions that would break a limit. */
 function renderRankingSaveBar() {
   const select = document.getElementById("rankSaveSelect") as HTMLSelectElement | null;
   if (select) {
-    select.innerHTML = rankingSaves
+    select.innerHTML = state.rankingSaves
       .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`)
       .join("");
-    select.value = activeRankingSave;
+    select.value = state.activeRankingSave;
   }
   const del = document.getElementById("btnRankSaveDelete") as HTMLButtonElement | null;
-  if (del) del.disabled = rankingSaves.length < 2;
+  if (del) del.disabled = state.rankingSaves.length < 2;
   const add = document.getElementById("btnRankSaveNew") as HTMLButtonElement | null;
-  if (add) add.disabled = rankingSaves.length >= MAX_RANKING_SAVES;
+  if (add) add.disabled = state.rankingSaves.length >= MAX_RANKING_SAVES;
 
   const active = activeRankingSaveEntry();
-  const dirty = active ? isDirty(active.items, profileList, eloMap, pkComparisonsMap) : false;
+  const dirty = active ? isDirty(active.items, state.profileList, eloMap, pkComparisonsMap) : false;
   const status = document.getElementById("rankSaveStatus");
   if (status) status.hidden = !dirty;
   const save = document.getElementById("btnRankSaveSave") as HTMLButtonElement | null;
@@ -1648,16 +1644,16 @@ function renderRankingSaveBar() {
 /** Copy the working ranking into the active save (儲存 / 儲存並切換). */
 function saveWorkingIntoActive() {
   const save = activeRankingSaveEntry();
-  if (save) save.items = captureLive(profileList, eloMap, pkComparisonsMap);
+  if (save) save.items = captureLive(state.profileList, eloMap, pkComparisonsMap);
 }
 
 /** Show a save and make it the active one (the working ranking becomes its content). */
 function loadSaveIntoLive(save: RankingSave) {
-  const restored = restoreSave(save.items, profileList);
-  profileList = restored.list;
+  const restored = restoreSave(save.items, state.profileList);
+  state.profileList = restored.list;
   replaceWeights(eloMap, restored.elo);
   replaceWeights(pkComparisonsMap, restored.matches);
-  activeRankingSave = save.id;
+  state.activeRankingSave = save.id;
   // Same flash state reset as 重置: the pools belong to the previous ranking.
   flashSkippedIds.clear();
   flashSeenAllIds.clear();
@@ -1692,8 +1688,8 @@ async function revertActiveRankingSave() {
 }
 
 async function switchRankingSave(targetId: string) {
-  const target = rankingSaves.find((s) => s.id === targetId);
-  if (!target || target.id === activeRankingSave) {
+  const target = state.rankingSaves.find((s) => s.id === targetId);
+  if (!target || target.id === state.activeRankingSave) {
     renderRankingSaveBar();
     return;
   }
@@ -1706,7 +1702,7 @@ async function switchRankingSave(targetId: string) {
     resetDraft();
   }
   const active = activeRankingSaveEntry();
-  if (active && isDirty(active.items, profileList, eloMap, pkComparisonsMap)) {
+  if (active && isDirty(active.items, state.profileList, eloMap, pkComparisonsMap)) {
     const choice = await choiceDialog(
       `「${active.name}」有未儲存的修改`,
       `切換前要先把目前的排序儲存到「${active.name}」嗎？`,
@@ -1729,20 +1725,20 @@ async function switchRankingSave(targetId: string) {
 }
 
 async function saveAsNewRankingSave() {
-  if (rankingSaves.length >= MAX_RANKING_SAVES) return;
+  if (state.rankingSaves.length >= MAX_RANKING_SAVES) return;
   const previous = activeRankingSaveEntry();
   const previousName = previous ? previous.name : "目前的存檔";
   const body = `用畫面上目前的排序開一份新的存檔並切過去；「${previousName}」維持上次儲存的內容。`;
-  const name = await promptDialog("複製成新的排序存檔", body, nextSaveName(rankingSaves));
+  const name = await promptDialog("複製成新的排序存檔", body, nextSaveName(state.rankingSaves));
   if (name === null) return;
   // The new save starts clean; the old one is left exactly as it was last saved.
   const save: RankingSave = {
     id: newSaveId(),
     name,
-    items: captureLive(profileList, eloMap, pkComparisonsMap),
+    items: captureLive(state.profileList, eloMap, pkComparisonsMap),
   };
-  rankingSaves.push(save);
-  activeRankingSave = save.id;
+  state.rankingSaves.push(save);
+  state.activeRankingSave = save.id;
   renderRankingSaveBar();
   await saveConfigImmediate();
   addLog("act", "已複製成新的排序存檔", `「${name}」，之後的儲存都存在這份`);
@@ -1760,12 +1756,12 @@ async function renameRankingSave() {
 }
 
 async function deleteRankingSave() {
-  if (rankingSaves.length < 2) return;
+  if (state.rankingSaves.length < 2) return;
   const save = activeRankingSaveEntry();
   if (!save) return;
-  const remaining = rankingSaves.filter((s) => s.id !== save.id);
+  const remaining = state.rankingSaves.filter((s) => s.id !== save.id);
   const next = remaining[0];
-  const dirtyNote = isDirty(save.items, profileList, eloMap, pkComparisonsMap)
+  const dirtyNote = isDirty(save.items, state.profileList, eloMap, pkComparisonsMap)
     ? "畫面上未儲存的修改也會一併捨棄。"
     : "";
   const draftNote = draftVotes > 0 ? `另有 ${draftVotes} 票二選一草稿尚未套用，會一併捨棄。` : "";
@@ -1773,7 +1769,7 @@ async function deleteRankingSave() {
   if (!(await confirmDialog(`刪除排序存檔「${save.name}」？`, body, "備份並刪除"))) return;
   if (!(await backupBeforeBulkEdit("delete-ranking-save", "刪除存檔"))) return;
   if (draftVotes > 0) resetDraft();
-  rankingSaves = remaining;
+  state.rankingSaves = remaining;
   // Load the next save the way 切換 does, but without capturing the deleted one.
   loadSaveIntoLive(next);
   renderRankingSaveBar();
@@ -1799,7 +1795,7 @@ async function importMasteryToProfile() {
       addLog("skip", "尚無專精資料可匯入", "請確認英雄聯盟客戶端已開啟並登入帳號");
       return;
     }
-    const classified = profileList.filter((c) => c.t !== "未分類").length;
+    const classified = state.profileList.filter((c) => c.t !== "未分類").length;
     if (classified > 0) {
       const ok = await confirmDialog(
         "依帳號專精重新初排？",
@@ -1817,7 +1813,7 @@ async function importMasteryToProfile() {
       }
     }
 
-    const list = profileList;
+    const list = state.profileList;
     const played = list
       .filter((c) => (masteryMap.get(c.id)?.championPoints ?? 0) > 0 && c.t !== "封印")
       .sort((a, b) => {
@@ -1848,11 +1844,11 @@ async function importMasteryToProfile() {
     });
     const sealed = list.filter((c) => c.t === "封印");
 
-    profileList = [...played, ...sealed, ...unplayed];
+    state.profileList = [...played, ...sealed, ...unplayed];
 
     // Seed ELO from mastery order so pairwise PK starts from the mastery ranking;
     // the old match counts described the replaced weights, so they restart too.
-    profileList.forEach((c, idx) => {
+    state.profileList.forEach((c, idx) => {
       eloMap[c.id] = 1700 - idx * 2;
       pkComparisonsMap[c.id] = 0;
     });
@@ -1889,7 +1885,7 @@ document.getElementById("btnResetTiers")?.addEventListener("click", async () => 
     "備份並重置"
   );
   if (!ok || !(await backupBeforeBulkEdit("reset-tiers", "重置"))) return;
-  const list = profileList;
+  const list = state.profileList;
   list.forEach((c) => {
     c.t = "未分類";
     c.f = "";
@@ -1906,7 +1902,7 @@ document.getElementById("btnResetTiers")?.addEventListener("click", async () => 
 });
 
 document.getElementById("btnSortUnranked")?.addEventListener("click", () => {
-  const list = profileList;
+  const list = state.profileList;
   const unranked = list.filter((c) => c.t === "未分類").sort((a, b) => a.n.localeCompare(b.n, "zh-Hant"));
   if (unranked.length === 0) return;
   let k = 0;
@@ -1983,11 +1979,11 @@ document.getElementById("importFile")?.addEventListener("change", async (e) => {
 /* ---------- Config Persistence (Debounced) ---------- */
 function collectConfig(): AppConfig {
   // Snapshot the visible form into the single shared settings/profile state.
-  currentSettings = readModeSettingsFromUI();
+  state.currentSettings = readModeSettingsFromUI();
   ffTime = textValue("cfgFfTime", "08:00");
 
   // One shared ranking: both modes are written from the same list.
-  const serializedProfile: ProfileItemConfig[] = profileList.map((c) => ({
+  const serializedProfile: ProfileItemConfig[] = state.profileList.map((c) => ({
     id: c.id,
     name: c.n,
     tier: c.t,
@@ -2008,8 +2004,8 @@ function collectConfig(): AppConfig {
     accept_delay_sec: numberValue("cfgAcceptDelay", 2),
     accept_modes: [...acceptModes],
     accept_notify: activeSegValue("cfgAcceptNotify") || "sound",
-    aram_settings: currentSettings,
-    mayhem_settings: { ...currentSettings },
+    aram_settings: state.currentSettings,
+    mayhem_settings: { ...state.currentSettings },
     auto_chat_on_swap: checkboxValue("cfgAutoChat", true),
     chat_delay_sec: chatDelaySec,
     chat_messages: [...chatMessages],
@@ -2032,12 +2028,12 @@ function collectConfig(): AppConfig {
     aram_profile: serializedProfile,
     mayhem_profile: serializedProfile,
     // Every save carries its own last manual save, the active one included.
-    ranking_saves: rankingSaves.map((s) => ({
+    ranking_saves: state.rankingSaves.map((s) => ({
       id: s.id,
       name: s.name,
       items: s.items.map(toProfileItemConfig),
     })),
-    active_ranking_save: activeRankingSave,
+    active_ranking_save: state.activeRankingSave,
   };
 }
 
@@ -2082,20 +2078,18 @@ function debouncedSaveConfig() {
 }
 
 /* ---------- LCU Backend Integration ---------- */
-let isLcuConnected = false;
-let lastKnownPhase = "";
 
 async function initLcuBackend() {
   // 1. Register real-time listeners FIRST so we never miss an event during startup
   await listen<ConnectionStatus>("lcu-status", (event) => {
-    isLcuConnected = event.payload.connected;
+    state.isLcuConnected = event.payload.connected;
     updateConnectionUI(event.payload.connected, event.payload.port);
     if (event.payload.connected) {
       void loadChampionsFromLcu();
       void syncLivePhaseAndSession(true);
       addLog("sys", "LCU 已成功連線", `Port: ${event.payload.port || "未知"}`);
     } else {
-      lastKnownPhase = "";
+      state.lastKnownPhase = "";
       clearOverviewSteps();
       resetOverviewMiniCards();
       addLog("sys", "與 LCU 斷開連線", "等待客戶端重新啟動...");
@@ -2173,8 +2167,8 @@ async function initLcuBackend() {
 async function pollLiveOverviewStatus(initial: boolean) {
   try {
     const status: ConnectionStatus = await invoke("get_connection_status");
-    const changedConn = status.connected !== isLcuConnected;
-    isLcuConnected = status.connected;
+    const changedConn = status.connected !== state.isLcuConnected;
+    state.isLcuConnected = status.connected;
     updateConnectionUI(status.connected, status.port);
     if (status.connected) {
       const fresh = initial || changedConn;
@@ -2183,7 +2177,7 @@ async function pollLiveOverviewStatus(initial: boolean) {
       // keeps the phase and queue label current (a lobby queue change has no event).
       await syncLivePhaseAndSession(fresh);
     } else if (changedConn) {
-      lastKnownPhase = "";
+      state.lastKnownPhase = "";
       clearOverviewSteps();
       resetOverviewMiniCards();
     }
@@ -2206,8 +2200,8 @@ function applyConfigToUI(cfg: AppConfig) {
   applyAcceptModesToUI();
   setSegValue("cfgAcceptNotify", cfg.accept_notify || "sound");
 
-  currentSettings = normalizeModeSettings(cfg.aram_settings ?? cfg.mayhem_settings);
-  writeModeSettingsToUI(currentSettings);
+  state.currentSettings = normalizeModeSettings(cfg.aram_settings ?? cfg.mayhem_settings);
+  writeModeSettingsToUI(state.currentSettings);
 
   setCheckbox("cfgAutoChat", cfg.auto_chat_on_swap ?? true);
   chatDelaySec = cfg.chat_delay_sec ?? 1;
@@ -2249,7 +2243,7 @@ function applyConfigToUI(cfg: AppConfig) {
   // account (or a previous load) must never survive into this one.
   replaceWeights(eloMap, {});
   replaceWeights(pkComparisonsMap, {});
-  profileList =
+  state.profileList =
     chosenProfile.length > 0
       ? chosenProfile
           .filter((p) => p.id > 0 && p.id < 10000)
@@ -2267,20 +2261,20 @@ function applyConfigToUI(cfg: AppConfig) {
             };
           })
       : createDefaultRoster();
-  ensureAllBuiltinChampions(profileList);
+  ensureAllBuiltinChampions(state.profileList);
   // Blank names (hand-edited files) fall back to the built-in name.
-  for (const c of profileList) {
+  for (const c of state.profileList) {
     if (!c.n) c.n = BUILTIN_CHAMPIONS.find((b) => b.id === c.id)?.n ?? `#${c.id}`;
   }
 
   const normalizedSaves = normalizeSaves(cfg.ranking_saves, cfg.active_ranking_save);
-  rankingSaves = normalizedSaves.saves;
-  activeRankingSave = normalizedSaves.activeId;
+  state.rankingSaves = normalizedSaves.saves;
+  state.activeRankingSave = normalizedSaves.activeId;
   // An old-format save (or the auto-created 存檔 1) has no items yet: take the
   // working ranking as its first manual save so it starts clean instead of 未儲存.
-  const activeSave = rankingSaves.find((s) => s.id === activeRankingSave);
+  const activeSave = state.rankingSaves.find((s) => s.id === state.activeRankingSave);
   if (activeSave && activeSave.items.length === 0) {
-    activeSave.items = captureLive(profileList, eloMap, pkComparisonsMap);
+    activeSave.items = captureLive(state.profileList, eloMap, pkComparisonsMap);
   }
 
   renderTiers();
@@ -2356,7 +2350,7 @@ async function loadChampionsFromLcu() {
     addLog("sys", `已載入 ${valid.length} 位繁中英雄名稱資料`, "本地 LCU 資產解析完成");
 
     // One shared ranking: keep the loaded list in sync for both modes.
-    const changed = mergeLcuChampions(profileList, valid);
+    const changed = mergeLcuChampions(state.profileList, valid);
 
     renderTiers();
     fillTradeOptions();
@@ -2421,7 +2415,7 @@ function isAlliedMember(member: any): boolean {
 function effectiveSecondarySpell(myChamp: TierChampion | undefined): number {
   const remembered = checkboxValue("cfgRememberSpells", true) ? myChamp?.secSpell : undefined;
   if (isSupportedSecondarySpell(remembered)) return remembered;
-  const fallback = currentSettings.default_secondary_spell;
+  const fallback = state.currentSettings.default_secondary_spell;
   return isSupportedSecondarySpell(fallback) ? fallback : DEFAULT_SECONDARY_SPELL_ID;
 }
 
@@ -2637,7 +2631,7 @@ function renderAssistBanners() {
       cardEl.style.display = "none";
       cardEl.innerHTML = "";
     } else {
-      const name = profileList.find((c) => c.id === card.champId)?.n || `ID:${card.champId}`;
+      const name = state.profileList.find((c) => c.id === card.champId)?.n || `ID:${card.champId}`;
       cardEl.style.display = "";
       cardEl.innerHTML = `
     <img src="${ICON(card.champId)}" alt="" />
@@ -2669,9 +2663,9 @@ function renderAssistBanners() {
 
 function renderOverviewColumns() {
   const data = lastChampSelectData;
-  const profile = profileList;
+  const profile = state.profileList;
   const scores = calculateScores(profile);
-  const settings = currentSettings;
+  const settings = state.currentSettings;
   const benchDiff = settings?.bench_diff_threshold ?? 10;
   const tradeDiff = settings?.trade_accept_diff ?? 10;
 
@@ -2715,8 +2709,8 @@ document.getElementById("miniBench")?.addEventListener("click", (e) => {
 async function pickSecondarySpell(pickedId: number) {
   if (!isSupportedSecondarySpell(pickedId)) return;
   const myChampId = overviewMyChampId;
-  const champ = myChampId > 0 ? profileList.find((c) => c.id === myChampId) : undefined;
-  const modeDefault = currentSettings.default_secondary_spell;
+  const champ = myChampId > 0 ? state.profileList.find((c) => c.id === myChampId) : undefined;
+  const modeDefault = state.currentSettings.default_secondary_spell;
   const defaultSpell = isSupportedSecondarySpell(modeDefault) ? modeDefault : DEFAULT_SECONDARY_SPELL_ID;
 
   let secId = pickedId;
@@ -2733,7 +2727,7 @@ async function pickSecondarySpell(pickedId: number) {
     secId = isCustom ? champ.secSpell! : defaultSpell;
     champName = champ.n;
   } else {
-    currentSettings.default_secondary_spell = pickedId;
+    state.currentSettings.default_secondary_spell = pickedId;
     secId = pickedId;
     renderDefaultSpellPicker();
   }
@@ -2743,7 +2737,7 @@ async function pickSecondarySpell(pickedId: number) {
   // event never reads a stale config and reverts our newly chosen spell!
   await saveConfigImmediate();
 
-  if (isLcuConnected && lastKnownPhase === "ChampSelect") {
+  if (state.isLcuConnected && state.lastKnownPhase === "ChampSelect") {
     const [spell1Id, spell2Id] = resolveSpellPair(secId, primarySpellKeyFromUI());
     const label = `${champName ? `【${champName}】` : ""}D ${spellName(spell1Id)} ＋ F ${spellName(
       spell2Id
@@ -2799,7 +2793,7 @@ document.getElementById("cardSuggest")?.addEventListener("click", (e) => {
   const championId = Number(btn.dataset.pickCard);
   const actionId = Number(btn.dataset.pickAction);
   if (championId <= 0 || actionId < 0) return;
-  const name = profileList.find((c) => c.id === championId)?.n || `ID:${championId}`;
+  const name = state.profileList.find((c) => c.id === championId)?.n || `ID:${championId}`;
   invoke("pick_champion_card", { actionId, championId })
     .then(() => {
       assistState = applyAssist(assistState, { kind: "clear", target: "card" });
@@ -2874,8 +2868,8 @@ function clearOverviewSteps() {
 }
 
 async function updateGameflowPhase(phase: string) {
-  const phaseChanged = phase !== lastKnownPhase;
-  lastKnownPhase = phase;
+  const phaseChanged = phase !== state.lastKnownPhase;
+  state.lastKnownPhase = phase;
 
   // The queue id can change between phases, so resolve it before labelling the phase.
   await refreshCurrentQueueId();
@@ -2893,7 +2887,7 @@ async function updateGameflowPhase(phase: string) {
   // In-game sub-phases light "遊戲中"; post-game phases mark every step done.
   const IN_GAME_PHASES = ["GameStart", "InProgress", "Reconnect"];
   const POST_GAME_PHASES = ["WaitingForStats", "PreEndOfGame", "EndOfGame"];
-  const normalizedPhase = isLcuConnected && (phase === "None" || phase === "")
+  const normalizedPhase = state.isLcuConnected && (phase === "None" || phase === "")
     ? "Lobby"
     : IN_GAME_PHASES.includes(phase) ? "InProgress" : phase;
   const currentIdx = POST_GAME_PHASES.includes(phase) ? stepOrder.length : stepOrder.indexOf(normalizedPhase);
@@ -2938,7 +2932,7 @@ function setUpdateStatus(text: string) {
 /** Release notes, prefixed with a warning when a relaunch would interrupt a game. */
 function updateDialogBody(body: string | undefined): string {
   const notes = releaseNotes(body);
-  if (!isBusyPhase(lastKnownPhase)) return notes;
+  if (!isBusyPhase(state.lastKnownPhase)) return notes;
   return `更新會關閉並重開 App，遊戲本身不受影響。\n${notes}`;
 }
 
@@ -3019,7 +3013,7 @@ fillTradeOptions();
 renderTiers();
 renderChatMessages();
 applyAcceptModesToUI();
-writeModeSettingsToUI(currentSettings);
+writeModeSettingsToUI(state.currentSettings);
 renderSpellOverrideCount();
 syncFlashPool();
 syncBattlePool();
