@@ -1869,6 +1869,49 @@ fn champ_select_phase(data: &serde_json::Value) -> &str {
         .unwrap_or("")
 }
 
+/// True when our pending pick action is still open and the player has not picked
+/// a champion (or still holds the champion we saw before the delay) themselves.
+fn is_card_pick_still_pending(
+    session: &serde_json::Value,
+    action_id: i64,
+    local_cell_id: i64,
+    initial_my_champ_id: i32,
+) -> bool {
+    let action_completed = session
+        .get("actions")
+        .and_then(|v| v.as_array())
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|g| g.as_array())
+                .flatten()
+                .any(|action| {
+                    action.get("id").and_then(|v| v.as_i64()) == Some(action_id)
+                        && action
+                            .get("completed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                })
+        })
+        .unwrap_or(true);
+    if action_completed {
+        return false;
+    }
+
+    let current_champ_id = session
+        .get("myTeam")
+        .and_then(|v| v.as_array())
+        .and_then(|team| {
+            team.iter()
+                .find(|m| m.get("cellId").and_then(|v| v.as_i64()) == Some(local_cell_id))
+        })
+        .and_then(|m| m.get("championId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+
+    current_champ_id == 0 || current_champ_id == initial_my_champ_id
+}
+
 async fn handle_champ_select_event(
     event: &lcu::LcuEvent,
     app_handle: &tauri::AppHandle,
@@ -2122,6 +2165,89 @@ async fn handle_champ_select_event(
                             "reason": reason
                         }),
                     );
+
+                    // Opt-in automation: with `auto_card_execute` on, the backend
+                    // picks the same card itself after the delay. The suggestion
+                    // above stays, so the player can still pick another card.
+                    if settings.auto_card_execute {
+                        let lcu_auto: SharedLcu = Arc::clone(lcu);
+                        let tracker_auto: SharedTracker = Arc::clone(tracker_lock);
+                        let app_auto = app_handle.clone();
+                        let delay = settings.card_select_delay_sec.max(0.0);
+                        let initial_my_champ_id = my_champ_id;
+                        let reason_auto = reason.clone();
+                        spawn(async move {
+                            if delay > 0.0 {
+                                tokio::time::sleep(std::time::Duration::from_secs_f64(delay))
+                                    .await;
+                            }
+
+                            // The player may have picked manually while we were waiting.
+                            match lcu_auto.fetch_champ_select_session().await {
+                                Ok(session) => {
+                                    if !is_card_pick_still_pending(
+                                        &session,
+                                        action_id,
+                                        local_cell_id,
+                                        initial_my_champ_id,
+                                    ) {
+                                        let _ = app_auto.emit(
+                                            "lcu-log",
+                                            serde_json::json!({
+                                                "kind": "skip",
+                                                "title": "略過自動選卡",
+                                                "reason": "玩家已手動選角，保留手動選擇"
+                                            }),
+                                        );
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracker_auto.lock().await.card_picked = false;
+                                    let _ = app_auto.emit(
+                                        "lcu-log",
+                                        serde_json::json!({
+                                            "kind": "err",
+                                            "title": "無法確認選角狀態，取消自動選卡",
+                                            "reason": format!("{}（{}）", reason_auto, e)
+                                        }),
+                                    );
+                                    return;
+                                }
+                            }
+
+                            {
+                                tracker_auto.lock().await.bot_expected_champ = Some(champ_id);
+                            }
+                            match lcu_auto.select_champion_card(action_id, champ_id).await {
+                                Ok(()) => {
+                                    let _ = app_auto.emit(
+                                        "lcu-log",
+                                        serde_json::json!({
+                                            "kind": "act",
+                                            "title": "已自動選擇開局英雄卡",
+                                            "reason": reason_auto
+                                        }),
+                                    );
+                                }
+                                Err(e) => {
+                                    let mut tr_lock = tracker_auto.lock().await;
+                                    tr_lock.card_picked = false;
+                                    if tr_lock.bot_expected_champ == Some(champ_id) {
+                                        tr_lock.bot_expected_champ = None;
+                                    }
+                                    let _ = app_auto.emit(
+                                        "lcu-log",
+                                        serde_json::json!({
+                                            "kind": "err",
+                                            "title": "開局選卡失敗",
+                                            "reason": format!("{}（{}）", reason_auto, e)
+                                        }),
+                                    );
+                                }
+                            }
+                        });
+                    }
                 }
                 CardDecision::Skip { reason } => {
                     let _ = app_handle.emit(
@@ -2521,8 +2647,8 @@ async fn handle_champ_select_event(
 mod tests {
     use super::{
         SaveConfigError, append_line_rotating, bench_lock_remaining_secs, champ_select_phase,
-        now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
-        validate_trade_chat_text,
+        is_card_pick_still_pending, now_epoch_ms, parse_ff_time, phase_elapsed_ms,
+        remaining_phase_secs, session_my_champ_id, validate_trade_chat_text,
     };
     use crate::config;
     use serde_json::json;
@@ -2632,6 +2758,32 @@ mod tests {
             remaining_phase_secs(&zero_left).filter(|&s| s >= 0),
             Some(0)
         );
+    }
+
+    #[test]
+    fn test_is_card_pick_still_pending() {
+        let session = json!({
+            "actions": [[{ "id": 7, "completed": false }]],
+            "myTeam": [{ "cellId": 2, "championId": 0 }]
+        });
+        assert!(is_card_pick_still_pending(&session, 7, 2, 0));
+
+        // Player picked manually while we were sleeping.
+        let manual_pick = json!({
+            "actions": [[{ "id": 7, "completed": false }]],
+            "myTeam": [{ "cellId": 2, "championId": 103 }]
+        });
+        assert!(!is_card_pick_still_pending(&manual_pick, 7, 2, 0));
+
+        // Action already completed (e.g. by us or the client).
+        let completed = json!({
+            "actions": [[{ "id": 7, "completed": true }]],
+            "myTeam": [{ "cellId": 2, "championId": 0 }]
+        });
+        assert!(!is_card_pick_still_pending(&completed, 7, 2, 0));
+
+        // Session without action data is treated as not pending.
+        assert!(!is_card_pick_still_pending(&json!({}), 7, 2, 0));
     }
 
     #[test]

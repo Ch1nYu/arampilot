@@ -73,6 +73,7 @@ interface ModeSettings {
   auto_card_select: boolean;
   card_select_delay_sec: number;
   card_select_strategy: string;
+  auto_card_execute: boolean;
   auto_bench_swap: boolean;
   auto_bench_execute: boolean;
   bench_diff_threshold: number;
@@ -384,6 +385,7 @@ function defaultModeSettings(): ModeSettings {
     auto_card_select: true,
     card_select_delay_sec: 1.5,
     card_select_strategy: "highest_score",
+    auto_card_execute: false,
     auto_bench_swap: true,
     auto_bench_execute: false,
     bench_diff_threshold: 10,
@@ -449,6 +451,7 @@ function readModeSettingsFromUI(): ModeSettings {
     auto_card_select: checkboxValue("cfgAutoCard", true),
     card_select_delay_sec: cardSelectDelaySec,
     card_select_strategy: activeSegValue("cardStrategy") || "highest_score",
+    auto_card_execute: checkboxValue("cfgAutoCardExecute", false),
     auto_bench_swap: checkboxValue("cfgAutoBench", true),
     auto_bench_execute: checkboxValue("cfgAutoBenchExecute", false),
     bench_diff_threshold: numberValue("cfgBenchDiff", 10),
@@ -468,6 +471,7 @@ function writeModeSettingsToUI(s: ModeSettings) {
   setCheckbox("cfgAutoCard", s.auto_card_select);
   cardSelectDelaySec = s.card_select_delay_sec;
   setSegValue("cardStrategy", s.card_select_strategy);
+  setCheckbox("cfgAutoCardExecute", s.auto_card_execute);
   setCheckbox("cfgAutoBench", s.auto_bench_swap);
   setCheckbox("cfgAutoBenchExecute", s.auto_bench_execute);
   setRangeValue("cfgBenchDiff", s.bench_diff_threshold);
@@ -732,6 +736,7 @@ document.getElementById("logFilter")?.addEventListener("click", (e) => {
 
 /* ---------- Config Persistence Triggers ---------- */
 const SAVE_ON_CHANGE_IDS = [
+  "cfgAutoCardExecute",
   "cfgLockStopBench",
   "cfgAutoBenchExecute",
   "cfgFfTime",
@@ -2856,6 +2861,7 @@ function normalizeModeSettings(src: ModeSettings | undefined): ModeSettings {
     auto_card_select: pickBool(s.auto_card_select, d.auto_card_select),
     card_select_delay_sec: pickNumber(s.card_select_delay_sec, d.card_select_delay_sec),
     card_select_strategy: pickString(s.card_select_strategy, d.card_select_strategy),
+    auto_card_execute: pickBool(s.auto_card_execute, d.auto_card_execute),
     auto_bench_swap: pickBool(s.auto_bench_swap, d.auto_bench_swap),
     auto_bench_execute: pickBool(s.auto_bench_execute, d.auto_bench_execute),
     bench_diff_threshold: pickNumber(s.bench_diff_threshold, d.bench_diff_threshold),

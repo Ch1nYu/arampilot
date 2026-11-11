@@ -120,6 +120,9 @@ pub struct ModeSettings {
     pub auto_card_select: bool,
     pub card_select_delay_sec: f64,
     pub card_select_strategy: String, // "highest_score", "only_top_tiers"
+    /// Opt-in: pick the suggested opening card ourselves after
+    /// `card_select_delay_sec` instead of only showing the suggestion.
+    pub auto_card_execute: bool,
 
     pub auto_bench_swap: bool,
     /// Opt-in: send the suggested bench swap automatically instead of only
@@ -143,6 +146,7 @@ impl Default for ModeSettings {
             auto_card_select: true,
             card_select_delay_sec: 1.5,
             card_select_strategy: "highest_score".to_string(),
+            auto_card_execute: false,
             auto_bench_swap: true,
             auto_bench_execute: false,
             bench_diff_threshold: 10,
@@ -1227,6 +1231,21 @@ mod tests {
             "closing the window must retreat to the tray by default"
         );
         assert!(!cfg.auto_start, "Windows auto-start is opt-in");
+    }
+
+    #[test]
+    fn test_auto_card_execute_is_opt_in() {
+        assert!(!ModeSettings::default().auto_card_execute);
+        // A config written before the field existed must load as off.
+        let legacy = serde_json::json!({
+            "auto_card_select": true,
+            "card_select_delay_sec": 1.5,
+            "card_select_strategy": "highest_score"
+        });
+        let settings: ModeSettings =
+            serde_json::from_value(legacy).expect("legacy ModeSettings must load");
+        assert!(!settings.auto_card_execute);
+        assert!(settings.auto_card_select, "suggestions stay on by default");
     }
 
     #[test]
