@@ -98,7 +98,11 @@
             </div>
             <div class="set-row">
               <span class="set-lab">自動選建議的卡</span>
-              <label class="sw"><input type="checkbox" id="cfgAutoCardExecute"><i></i></label>
+              <label class="sw"><input type="checkbox" data-gate="g-card-auto" id="cfgAutoCardExecute"><i></i></label>
+            </div>
+            <div class="set-row" id="g-card-auto">
+              <span class="set-lab">自動選卡等待秒數</span>
+              <span class="sliderbox"><input type="range" min="0" max="12" step="0.1" value="1.5" data-prefix="第 " data-suffix=" 秒" id="cfgCardDelay"><span class="val"></span></span>
             </div>
           </div>
           <div class="hint">只顯示建議，由你點選</div>

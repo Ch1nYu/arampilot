@@ -407,7 +407,6 @@ let ffTime = "08:00";
  * while the app acted on its own. The config fields stay, so the last loaded value
  * is carried through every save instead of being reset to the default.
  */
-let cardSelectDelaySec = 1.5;
 let stopBenchRemainingSec = 5;
 let benchRetryIntervalMs = 80;
 let chatDelaySec = 1;
@@ -449,7 +448,7 @@ function readModeSettingsFromUI(): ModeSettings {
   const reject = activeSegValue("rejTier");
   return {
     auto_card_select: checkboxValue("cfgAutoCard", true),
-    card_select_delay_sec: cardSelectDelaySec,
+    card_select_delay_sec: numberValue("cfgCardDelay", 1.5),
     card_select_strategy: activeSegValue("cardStrategy") || "highest_score",
     auto_card_execute: checkboxValue("cfgAutoCardExecute", false),
     auto_bench_swap: checkboxValue("cfgAutoBench", true),
@@ -469,7 +468,7 @@ function readModeSettingsFromUI(): ModeSettings {
 
 function writeModeSettingsToUI(s: ModeSettings) {
   setCheckbox("cfgAutoCard", s.auto_card_select);
-  cardSelectDelaySec = s.card_select_delay_sec;
+  setRangeValue("cfgCardDelay", s.card_select_delay_sec);
   setSegValue("cardStrategy", s.card_select_strategy);
   setCheckbox("cfgAutoCardExecute", s.auto_card_execute);
   setCheckbox("cfgAutoBench", s.auto_bench_swap);
