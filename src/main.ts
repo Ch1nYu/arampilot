@@ -703,7 +703,7 @@ document.querySelectorAll("#accentPicker button").forEach((b) =>
 setAccent(localStorage.getItem("app-accent") || "ivory");
 
 /* ---------- Display Scale ---------- */
-/** Current slider value in percent (80–200), already snapped to the grid. */
+/** Current dropdown value in percent (80–200), already snapped to the grid. */
 function uiScalePercent(): number {
   return clampUiScalePercent(numberValue("cfgUiScale", UI_SCALE_DEFAULT));
 }
@@ -711,13 +711,14 @@ function uiScalePercent(): number {
 /** Zoom the webview; the backend clamps the same way and does the actual set_zoom. */
 function applyUiScale(percent: number) {
   const snapped = clampUiScalePercent(percent);
-  setRangeValue("cfgUiScale", snapped);
+  const select = document.getElementById("cfgUiScale") as HTMLSelectElement | null;
+  if (select) select.value = String(snapped);
   invoke("set_ui_scale", { scale: snapped / 100 }).catch((e) =>
     console.error("Failed to apply display scale:", e)
   );
 }
 
-/** Slider moves save through the generic range handler; shortcuts save here. */
+/** Apply a new scale and save it (dropdown and shortcuts). */
 function commitUiScale(percent: number) {
   applyUiScale(percent);
   debouncedSaveConfig();
@@ -725,7 +726,7 @@ function commitUiScale(percent: number) {
 
 document
   .getElementById("cfgUiScale")
-  ?.addEventListener("input", () => applyUiScale(uiScalePercent()));
+  ?.addEventListener("change", () => commitUiScale(uiScalePercent()));
 
 /** Text fields keep their own Ctrl+`=` / Ctrl+`-` / Ctrl+`0` behaviour. */
 function isTextEntry(el: HTMLElement | null): boolean {
