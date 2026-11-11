@@ -126,7 +126,11 @@ pnpm tauri build                                # 產生安裝檔
 | `src-tauri/src/config.rs` | 設定讀寫、備份、開機自啟 |
 | `src-tauri/src/livegame.rs` | 遊戲中投降提醒 |
 | `src-tauri/src/lib.rs` | Tauri 指令、事件、系統匣 |
-| `src/main.ts` | 介面與互動；其餘 `src/*.ts` 是可單獨測試的純邏輯 |
+| `src-tauri/src/fatal.rs` | 無法啟動或當掉時的錯誤視窗 |
+| `src/main.ts` | 啟動流程、設定頁表單、設定讀寫、LCU 事件接線 |
+| `src/overview.ts`、`src/battle.ts`、`src/heroPage.ts`、`src/rankingSaveBar.ts`、`src/updaterUi.ts`、`src/configTransfer.ts` | 各頁面的介面與互動，由 `main.ts` 以 `init…(deps)` 啟動 |
+| `src/state.ts` | 跨頁面共用的狀態 |
+| 其餘 `src/*.ts` | 可單獨測試的純邏輯與小工具（`*.test.ts` 為 vitest 測試） |
 | `mockups/algo-lab.html` | 排序工作台（網頁版排序工具，搭配 `mockups/autosave_server.py`） |
 
 給程式 agent 的規則在 [AGENTS.md](AGENTS.md)。
