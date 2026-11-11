@@ -22,6 +22,7 @@
     </div>
     <div class="winctl">
       <button id="btnMinimize" title="縮小至系統匣"><svg viewBox="0 0 12 12" stroke="currentColor"><path d="M1 6h10"/></svg></button>
+      <button id="btnMaximize" title="最大化"><svg viewBox="0 0 12 12" stroke="currentColor"><rect x="1.5" y="1.5" width="9" height="9" fill="none"/></svg></button>
       <button id="btnClose" class="close" title="關閉"><svg viewBox="0 0 12 12" stroke="currentColor"><path d="M1 1l10 10M11 1L1 11"/></svg></button>
     </div>
   </header>
@@ -367,6 +368,10 @@
               <button data-accent="emerald" style="color:#34D399">翡翠綠</button>
               <button data-accent="violet" style="color:#C084FC">暮光紫</button>
             </span>
+          </div>
+          <div class="set-row">
+            <span class="set-lab">顯示比例</span>
+            <span class="sliderbox"><input type="range" min="80" max="200" step="10" value="100" data-suffix="%" id="cfgUiScale"><span class="val"></span></span>
           </div>
         </div>
 

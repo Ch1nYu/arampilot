@@ -166,6 +166,9 @@ impl Default for ModeSettings {
 pub struct AppConfig {
     pub master_enabled: bool,
     pub accent_color: String, // "ivory", "crimson", "amber", "emerald", "violet"
+    /// Webview zoom for the whole UI; `set_ui_scale` applies it and `sanitize`
+    /// keeps it inside `UI_SCALE_MIN..=UI_SCALE_MAX`.
+    pub ui_scale: f64,
 
     // Summoner spells
     pub auto_summoner_spells: bool,
@@ -243,6 +246,7 @@ impl Default for AppConfig {
         Self {
             master_enabled: true,
             accent_color: "ivory".to_string(),
+            ui_scale: 1.0,
             auto_summoner_spells: true,
             remember_champion_spells: true,
             primary_spell_key: "D".to_string(),
@@ -297,6 +301,7 @@ impl AppConfig {
     /// Drop classic-mode / dummy champion ids and duplicate entries from saved profiles, then
     /// unify ARAM and Mayhem into one shared ranking so both modes use the same champion order.
     pub fn sanitize(&mut self) {
+        self.ui_scale = clamp_ui_scale(self.ui_scale);
         if !self.ff_lead_sec.is_finite() {
             self.ff_lead_sec = 0.0;
         }
@@ -329,6 +334,20 @@ fn sanitize_ranking_saves(saves: &mut Vec<RankingSave>) {
         let name: String = save.name.trim().chars().take(MAX_RANKING_SAVE_NAME).collect();
         save.name = name;
         sanitize_profile(&mut save.items);
+    }
+}
+
+/// Smallest and largest UI zoom the settings slider offers.
+pub const UI_SCALE_MIN: f64 = 0.8;
+pub const UI_SCALE_MAX: f64 = 2.0;
+
+/// Clamp a UI zoom factor to `UI_SCALE_MIN..=UI_SCALE_MAX`; NaN / infinity
+/// (a hand-edited file) falls back to 1.0 instead of the minimum.
+pub fn clamp_ui_scale(scale: f64) -> f64 {
+    if scale.is_finite() {
+        scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+    } else {
+        1.0
     }
 }
 
@@ -1235,6 +1254,32 @@ mod tests {
             "closing the window must retreat to the tray by default"
         );
         assert!(!cfg.auto_start, "Windows auto-start is opt-in");
+    }
+
+    #[test]
+    fn test_ui_scale_defaults_to_100_percent() {
+        assert_eq!(AppConfig::default().ui_scale, 1.0);
+        // Files written before the setting existed must not zoom the UI.
+        let legacy: AppConfig =
+            serde_json::from_str(r#"{"accent_color": "amber"}"#).unwrap();
+        assert_eq!(legacy.ui_scale, 1.0);
+    }
+
+    fn sanitized_ui_scale(scale: f64) -> f64 {
+        let mut cfg = AppConfig {
+            ui_scale: scale,
+            ..Default::default()
+        };
+        cfg.sanitize();
+        cfg.ui_scale
+    }
+
+    #[test]
+    fn test_sanitize_clamps_ui_scale() {
+        assert_eq!(sanitized_ui_scale(3.0), UI_SCALE_MAX);
+        assert_eq!(sanitized_ui_scale(0.1), UI_SCALE_MIN);
+        assert_eq!(sanitized_ui_scale(f64::NAN), 1.0);
+        assert_eq!(sanitized_ui_scale(1.3), 1.3);
     }
 
     #[test]

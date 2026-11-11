@@ -8,6 +8,7 @@ import { BUILTIN_CHAMPIONS } from "./champions";
 import { createPairMemory, pickPair } from "./pkPairing";
 import { validateImportedConfig } from "./importValidation";
 import { classifySaveError, type SaveResult } from "./saveResult";
+import { clampUiScalePercent, stepUiScalePercent, UI_SCALE_DEFAULT } from "./uiScale";
 import { applyAssist, emptyAssist, type AssistPayload, type AssistState } from "./assist";
 import {
   captureLive,
@@ -99,6 +100,7 @@ interface ProfileItemConfig {
 interface AppConfig {
   master_enabled: boolean;
   accent_color: string;
+  ui_scale?: number;
   auto_summoner_spells: boolean;
   remember_champion_spells?: boolean;
   primary_spell_key: string; // "D" | "F"
@@ -222,9 +224,26 @@ document.addEventListener(
 );
 
 /* ---------- Window controls ---------- */
+const MAXIMIZE_ICON =
+  '<svg viewBox="0 0 12 12" stroke="currentColor"><rect x="1.5" y="1.5" width="9" height="9" fill="none"/></svg>';
+const RESTORE_ICON =
+  '<svg viewBox="0 0 12 12" stroke="currentColor" fill="none"><rect x="1.5" y="4" width="6.5" height="6.5"/><path d="M4 4V1.5h6.5V8H8"/></svg>';
+
+/** Swap the maximize button between the maximize and restore glyphs. */
+function renderMaximizeButton(maximized: boolean) {
+  const btn = document.getElementById("btnMaximize");
+  if (!btn) return;
+  btn.title = maximized ? "還原" : "最大化";
+  btn.innerHTML = maximized ? RESTORE_ICON : MAXIMIZE_ICON;
+}
 document.getElementById("btnMinimize")?.addEventListener("click", () => {
   invoke("minimize_window").catch(console.error);
 });
+document.getElementById("btnMaximize")?.addEventListener("click", () => {
+  invoke<boolean>("toggle_maximize_window").then(renderMaximizeButton).catch(console.error);
+});
+// Snapping / Win+Up / double-click maximize without going through the button.
+listen<boolean>("window-maximized", (e) => renderMaximizeButton(e.payload)).catch(console.error);
 document.getElementById("btnClose")?.addEventListener("click", () => {
   invoke("close_window").catch(console.error);
 });
@@ -682,6 +701,52 @@ document.querySelectorAll("#accentPicker button").forEach((b) =>
   })
 );
 setAccent(localStorage.getItem("app-accent") || "ivory");
+
+/* ---------- Display Scale ---------- */
+/** Current slider value in percent (80–200), already snapped to the grid. */
+function uiScalePercent(): number {
+  return clampUiScalePercent(numberValue("cfgUiScale", UI_SCALE_DEFAULT));
+}
+
+/** Zoom the webview; the backend clamps the same way and does the actual set_zoom. */
+function applyUiScale(percent: number) {
+  const snapped = clampUiScalePercent(percent);
+  setRangeValue("cfgUiScale", snapped);
+  invoke("set_ui_scale", { scale: snapped / 100 }).catch((e) =>
+    console.error("Failed to apply display scale:", e)
+  );
+}
+
+/** Slider moves save through the generic range handler; shortcuts save here. */
+function commitUiScale(percent: number) {
+  applyUiScale(percent);
+  debouncedSaveConfig();
+}
+
+document
+  .getElementById("cfgUiScale")
+  ?.addEventListener("input", () => applyUiScale(uiScalePercent()));
+
+/** Text fields keep their own Ctrl+`=` / Ctrl+`-` / Ctrl+`0` behaviour. */
+function isTextEntry(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  if (el.isContentEditable || el.tagName === "TEXTAREA") return true;
+  return el.tagName === "INPUT" && (el as HTMLInputElement).type !== "range";
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  if (isTextEntry(e.target as HTMLElement | null)) return;
+  const current = uiScalePercent();
+  let next: number;
+  if (e.key === "=" || e.key === "+") next = stepUiScalePercent(current, 1);
+  else if (e.key === "-" || e.key === "_") next = stepUiScalePercent(current, -1);
+  else if (e.key === "0") next = UI_SCALE_DEFAULT;
+  else return;
+  // WebView2 zooms the page itself on Ctrl+= / Ctrl+-; the setting owns the zoom.
+  e.preventDefault();
+  commitUiScale(next);
+});
 
 /* ---------- Log Engine ---------- */
 interface LogRow {
@@ -2536,6 +2601,7 @@ function collectConfig(): AppConfig {
   return {
     master_enabled: masterEnabled,
     accent_color: localStorage.getItem("app-accent") || "ivory",
+    ui_scale: uiScalePercent() / 100,
     auto_summoner_spells: checkboxValue("cfgAutoSpells", true),
     remember_champion_spells: checkboxValue("cfgRememberSpells", true),
     primary_spell_key: primarySpellKeyFromUI(),
@@ -2740,6 +2806,7 @@ function richerProfile(aram: ProfileItemConfig[], mayhem: ProfileItemConfig[]): 
 
 function applyConfigToUI(cfg: AppConfig) {
   if (cfg.accent_color) setAccent(cfg.accent_color);
+  applyUiScale((cfg.ui_scale ?? 1) * 100);
 
   masterEnabled = cfg.master_enabled ?? true;
   setCheckbox("cfgAutoSpells", cfg.auto_summoner_spells ?? true);

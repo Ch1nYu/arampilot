@@ -1040,6 +1040,28 @@ fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
+/// Zoom the webview to `scale` (clamped like `AppConfig::sanitize`) and report the
+/// scale that was actually applied, so the slider can snap to it.
+#[tauri::command]
+fn set_ui_scale(window: tauri::WebviewWindow, scale: f64) -> Result<f64, String> {
+    let scale = config::clamp_ui_scale(scale);
+    window.set_zoom(scale).map_err(|e| e.to_string())?;
+    Ok(scale)
+}
+
+/// Maximize the window, or restore it when it is already maximized. Returns the
+/// new maximized state.
+#[tauri::command]
+fn toggle_maximize_window(window: tauri::Window) -> Result<bool, String> {
+    let maximized = window.is_maximized().map_err(|e| e.to_string())?;
+    if maximized {
+        window.unmaximize().map_err(|e| e.to_string())?;
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    Ok(!maximized)
+}
+
 /// `exec-log.jsonl` rolls over to `exec-log.1.jsonl` past this size (one old file kept).
 const EXEC_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -1274,6 +1296,7 @@ pub fn run() {
         config::sync_windows_auto_start(initial_config.auto_start);
     }
     let initial_config_for_tray = initial_config.clone();
+    let initial_ui_scale = initial_config.ui_scale;
     let shared_config: SharedConfig = Arc::new(RwLock::new(initial_config));
     let shared_account: SharedAccount = Arc::new(RwLock::new(None));
 
@@ -1323,10 +1346,19 @@ pub fn run() {
                     let _ = main_window.hide();
                 }
 
+                // Apply the saved display scale now that the webview exists.
+                let _ = main_window.set_zoom(config::clamp_ui_scale(initial_ui_scale));
+
                 // Closing the window retreats to the tray unless the user opted out.
                 let window_for_close = main_window.clone();
-                main_window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Maximizing by snapping / Win+Up / double-click never goes through the
+                // frontend, so the title bar button learns the state from here.
+                let window_for_resize = main_window.clone();
+                let last_maximized = Arc::new(std::sync::atomic::AtomicBool::new(
+                    main_window.is_maximized().unwrap_or(false),
+                ));
+                main_window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let config_lock = Arc::clone(&config_for_close);
                         let window = window_for_close.clone();
@@ -1338,6 +1370,15 @@ pub fn run() {
                             }
                         });
                     }
+                    tauri::WindowEvent::Resized(_) => {
+                        let maximized = window_for_resize.is_maximized().unwrap_or(false);
+                        if last_maximized.swap(maximized, std::sync::atomic::Ordering::Relaxed)
+                            != maximized
+                        {
+                            let _ = window_for_resize.emit("window-maximized", maximized);
+                        }
+                    }
+                    _ => {}
                 });
             }
 
@@ -1549,6 +1590,8 @@ pub fn run() {
             dev_quit_champ_select,
             minimize_window,
             close_window,
+            set_ui_scale,
+            toggle_maximize_window,
             append_exec_log
         ])
         .run(tauri::generate_context!())
