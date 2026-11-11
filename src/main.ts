@@ -3128,8 +3128,12 @@ function renderMyChampColumn(myChampId: number, myChamp: TierChampion | undefine
     <div class="hero">
       <span class="avatar">${avatar}</span>
       <div>
-        <div class="nm">${escapeHtml(name)}</div>
-        <div class="meta">${myChamp ? `${escapeHtml(myChamp.t || "未分類")} ${myScore ?? "—"} 分` : "尚未選角"}</div>
+        ${
+          myChampId > 0
+            ? `<div class="nm">${escapeHtml(name)}</div>
+        <div class="meta">${myChamp ? `${escapeHtml(myChamp.t || "未分類")} ${myScore ?? "—"} 分` : ""}</div>`
+            : `<div class="nm idle">尚未選角</div>`
+        }
       </div>
     </div>
     ${myChampId > 0 ? renderOverviewSpells(myChamp) : ""}
@@ -3231,15 +3235,15 @@ function renderBenchColumn(
   const caption = champUiState.bench_verdict
     ? escapeHtml(champUiState.bench_verdict)
     : entries.length === 0
-      ? `還沒進選角`
+      ? ""
       : suggestedId != null
         ? `建議換上 ${escapeHtml(suggestedName)}${suggestedReason ? `・${escapeHtml(suggestedReason)}` : ""}`
         : `沒有建議換的英雄（${benchDiff} 分）`;
 
   el.innerHTML = `
     <h3>板凳<span class="sub">依權重排序</span></h3>
-    <div class="bench-list">${rows || `<div class="ov-empty">板凳還沒解鎖</div>`}</div>
-    <div class="bench-cap">${caption}</div>`;
+    <div class="bench-list">${rows || `<div class="ov-empty">${overviewMyChampId > 0 ? "板凳上還沒有英雄" : "進選角後顯示板凳英雄"}</div>`}</div>
+    ${caption ? `<div class="bench-cap">${caption}</div>` : ""}`;
 }
 
 function renderTradeColumn(

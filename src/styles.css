@@ -234,12 +234,13 @@ a.go:hover { text-decoration: underline; }
 .rank-save-status { font-size: 11px; color: var(--warn); white-space: nowrap; }
 
 /* ---------- Overview：主視覺在左、決策面在右 ---------- */
+.ptrack { margin-bottom: 20px; }
 .psteps { display: flex; gap: 6px; }
 .pstep { flex: 1; height: 4px; border-radius: 2px; background: var(--line2); transition: background .25s; }
 .pstep.done { background: var(--ok); }
 .pstep.now { background: var(--accent); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent); }
-.plabels { display: flex; gap: 6px; margin-top: 6px; }
-.plabels span { flex: 1; font-size: 10px; color: var(--dim); text-align: center; }
+.plabels { display: flex; gap: 6px; margin-top: 8px; }
+.plabels span { flex: 1; font-size: 11px; color: var(--dim); text-align: center; }
 .plabels span.now { color: var(--text); font-weight: 600; }
 
 .alert {
@@ -262,13 +263,14 @@ a.go:hover { text-decoration: underline; }
 
 .cols { display: grid; grid-template-columns: 5fr 4fr; gap: 16px; }
 .hero-card { display: flex; flex-direction: column; }
-.hero-card h3, .bench-card h3 { font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: .1em; margin-bottom: 14px; }
-.hero-card h3 .sub, .bench-card h3 .sub { float: right; font-weight: 400; color: var(--dim); letter-spacing: 0; }
+.hero-card h3, .bench-card h3 { display: flex; align-items: baseline; justify-content: space-between; font-size: 11px; font-weight: 500; color: var(--muted); letter-spacing: .1em; margin-bottom: 14px; }
+.hero-card h3 .sub, .bench-card h3 .sub { margin-top: 0; font-size: 11px; font-weight: 400; color: var(--dim); letter-spacing: 0; }
 .hero { display: flex; gap: 16px; align-items: center; }
 .hero .avatar { width: 80px; height: 80px; border-radius: 16px; overflow: hidden; flex: none; box-shadow: 0 6px 24px rgba(0, 0, 0, .55); background: var(--panel2); }
 .hero .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .hero .ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 26px; color: var(--muted); }
 .hero .nm { font-size: 26px; font-weight: 700; line-height: 1.15; }
+.hero .nm.idle { font-size: 16px; font-weight: 500; color: var(--muted); }
 .hero .meta { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .spells { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .spell { display: flex; align-items: center; gap: 7px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 6px 6px; font: inherit; font-size: 13px; color: inherit; }
@@ -296,7 +298,7 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .bench-row .grabbing { font-size: 11px; color: var(--accent); }
 .bench-row .ban { font-size: 11px; color: var(--dim); }
 .bench-cap { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
-.ov-empty { font-size: 12px; color: var(--muted); padding: 8px 10px; }
+.ov-empty { font-size: 12px; color: var(--muted); padding: 8px 0; }
 
 .log-line {
   display: flex; align-items: center; gap: 12px;
