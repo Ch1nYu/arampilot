@@ -122,6 +122,9 @@ pub struct ModeSettings {
     pub card_select_strategy: String, // "highest_score", "only_top_tiers"
 
     pub auto_bench_swap: bool,
+    /// Opt-in: send the suggested bench swap automatically instead of only
+    /// showing it. The local 3s bench lock is always honoured first.
+    pub auto_bench_execute: bool,
     pub bench_diff_threshold: i32,
     pub lock_stop_bench: bool,
     pub stop_bench_remaining_sec: i32,
@@ -141,6 +144,7 @@ impl Default for ModeSettings {
             card_select_delay_sec: 1.5,
             card_select_strategy: "highest_score".to_string(),
             auto_bench_swap: true,
+            auto_bench_execute: false,
             bench_diff_threshold: 10,
             lock_stop_bench: true,
             stop_bench_remaining_sec: 5,
@@ -1223,6 +1227,20 @@ mod tests {
             "closing the window must retreat to the tray by default"
         );
         assert!(!cfg.auto_start, "Windows auto-start is opt-in");
+    }
+
+    #[test]
+    fn test_auto_bench_execute_is_opt_in() {
+        assert!(!ModeSettings::default().auto_bench_execute);
+        // A config written before the field existed must load as off.
+        let legacy = serde_json::json!({
+            "auto_bench_swap": true,
+            "bench_diff_threshold": 10
+        });
+        let settings: ModeSettings =
+            serde_json::from_value(legacy).expect("legacy ModeSettings must load");
+        assert!(!settings.auto_bench_execute);
+        assert!(settings.auto_bench_swap, "suggestions stay on by default");
     }
 
     #[test]

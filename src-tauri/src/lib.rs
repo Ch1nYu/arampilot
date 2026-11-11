@@ -129,7 +129,8 @@ fn emit_champ_select_state(app_handle: &tauri::AppHandle, tr: &ChampSelectSessio
 }
 
 /// Emit one assist suggestion. The frontend shows it with a one-click button;
-/// the backend never acts on it by itself.
+/// the backend only acts on it by itself when the matching opt-in automation
+/// (e.g. `auto_bench_execute`) is enabled.
 fn emit_lcu_assist(app_handle: &tauri::AppHandle, payload: serde_json::Value) {
     let _ = app_handle.emit("lcu-assist", payload);
 }
@@ -490,29 +491,254 @@ async fn apply_summoner_spells(
     Ok(())
 }
 
-/// How long the server still keeps `champion_id` locked for the manual snipe.
+/// The official client keeps a champion locked for 3s after it lands on the bench.
+const BENCH_LOCK_SECS: f64 = 3.0;
+
+/// Seconds still to wait before a bench swap for a champion may be sent.
 ///
-/// Mirrors the auto bench retry: a freshly revealed card (ours, or a teammate's)
-/// stays server-locked for ~3s after the phase/pick timestamp.
-fn manual_bench_lock_remaining(
-    session: &serde_json::Value,
-    target_is_our_offer: bool,
-    our_pick_time: Option<Instant>,
+/// The LCU bench swap endpoint does not enforce the 3s lock the official client
+/// applies, so it is enforced locally: no request may go out for a champion
+/// until `BENCH_LOCK_SECS` have passed since we first saw it on the bench. In
+/// the FINALIZATION phase the phase clock is an additional lower bound.
+fn bench_lock_remaining_secs(
+    seen_elapsed: Option<f64>,
+    phase: &str,
+    phase_elapsed_secs: Option<f64>,
 ) -> f64 {
-    let phase = champ_select_phase(session);
-    if phase == "FINALIZATION" {
-        let elapsed = phase_elapsed_ms(session).unwrap_or(0) as f64 / 1000.0;
-        (2.85 - elapsed).max(0.0)
-    } else if target_is_our_offer {
-        match our_pick_time {
-            Some(t) => (2.85 - t.elapsed().as_secs_f64()).max(0.0),
-            None => 0.15,
-        }
+    // Never seen on the bench: be conservative and wait the full lock.
+    let from_seen = seen_elapsed.map_or(BENCH_LOCK_SECS, |e| (BENCH_LOCK_SECS - e).max(0.0));
+    let from_phase = if phase == "FINALIZATION" {
+        phase_elapsed_secs
+            .map(|e| (BENCH_LOCK_SECS - e).max(0.0))
+            .unwrap_or(0.0)
     } else {
-        // Reveal phase with a teammate's champion: re-check every 150ms for the
-        // FINALIZATION transition that starts the 3s unlock countdown.
-        0.15
+        0.0
+    };
+    from_seen.max(from_phase)
+}
+
+/// Record when every champion now on the bench was first seen there.
+///
+/// Runs on every champ select snapshot, independently of whether bench
+/// suggestions or automation are enabled, so the lock clock is already running
+/// by the time a swap is considered. A snapshot without `benchChampions` keeps
+/// the existing clocks instead of clearing them.
+fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json::Value) {
+    let Some(bench) = data.get("benchChampions").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut current: Vec<i32> = bench
+        .iter()
+        .filter_map(|b| b.get("championId").and_then(|v| v.as_i64()))
+        .map(|cid| cid as i32)
+        .filter(|&cid| cid > 0)
+        .collect();
+    current.sort_unstable();
+    current.dedup();
+
+    tr.bench_first_seen.retain(|cid, _| current.contains(cid));
+    let now = Instant::now();
+    for cid in current {
+        tr.bench_first_seen.entry(cid).or_insert(now);
     }
+}
+
+/// Champion IDs currently sitting on the bench in a champ select session.
+fn session_bench_champion_ids(session: &serde_json::Value) -> Vec<i32> {
+    session
+        .get("benchChampions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| b.get("championId").and_then(|v| v.as_i64()))
+                .map(|cid| cid as i32)
+                .filter(|&cid| cid > 0)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Block until the local bench lock for `champion_id` has expired.
+///
+/// Re-polls the session at most every 150ms to confirm the champion is still on
+/// the bench, and returns `Err(reason)` as soon as it is gone (a teammate took
+/// it) or champ select ended. A swap may be sent only after this returns
+/// `Ok(())`.
+async fn wait_for_bench_lock(
+    lcu: &SharedLcu,
+    tracker: &SharedTracker,
+    champion_id: i32,
+) -> Result<(), String> {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
+    loop {
+        let session = lcu
+            .fetch_champ_select_session()
+            .await
+            .map_err(|_| "已離開選角".to_string())?;
+        let on_bench = session_bench_champion_ids(&session).contains(&champion_id);
+
+        let (seen_elapsed, phase, phase_elapsed_secs) = {
+            let mut tr = tracker.lock().await;
+            if on_bench {
+                // Safety net: the snapshot normally records this, but a champion
+                // we have never seen still has to unlock.
+                tr.bench_first_seen
+                    .entry(champion_id)
+                    .or_insert_with(Instant::now);
+            }
+            let seen = tr
+                .bench_first_seen
+                .get(&champion_id)
+                .map(|t| t.elapsed().as_secs_f64());
+            (
+                seen,
+                champ_select_phase(&session).to_string(),
+                phase_elapsed_ms(&session).map(|ms| ms as f64 / 1000.0),
+            )
+        };
+
+        if !on_bench {
+            return Err(format!("英雄 (ID: {}) 已離開板凳", champion_id));
+        }
+
+        let remaining = bench_lock_remaining_secs(seen_elapsed, &phase, phase_elapsed_secs);
+        if remaining <= 0.0 {
+            return Ok(());
+        }
+        tokio::time::sleep(POLL_INTERVAL.min(std::time::Duration::from_secs_f64(remaining))).await;
+    }
+}
+
+/// Give up on an automatic bench swap: release only what this task owns, then
+/// say why in the log.
+async fn abort_auto_bench_swap(
+    app: &tauri::AppHandle,
+    tracker: &SharedTracker,
+    champion_id: i32,
+    reason: &str,
+) {
+    let mut tr = tracker.lock().await;
+    if tr.bench_retry_target == Some(champion_id) {
+        tr.bench_retry_target = None;
+    }
+    if tr.bot_expected_champ == Some(champion_id) {
+        tr.bot_expected_champ = None;
+    }
+    emit_champ_select_state(app, &tr);
+    drop(tr);
+    let _ = app.emit(
+        "lcu-log",
+        serde_json::json!({
+            "kind": "err",
+            "title": "自動換角已停止",
+            "reason": reason,
+        }),
+    );
+}
+
+/// Opt-in automatic bench swap for one suggested champion.
+///
+/// Waits out the same local 3s bench lock the manual snipe honours, then sends
+/// one swap at a time and retries at most 3 more times. Never sets
+/// `manual_bench_hold`: an automatic swap is not a manual pick.
+async fn run_auto_bench_swap(
+    app: tauri::AppHandle,
+    lcu: SharedLcu,
+    tracker: SharedTracker,
+    champion_id: i32,
+    retry_ms: u64,
+) {
+    if let Err(reason) = wait_for_bench_lock(&lcu, &tracker, champion_id).await {
+        abort_auto_bench_swap(&app, &tracker, champion_id, &reason).await;
+        return;
+    }
+
+    // One initial attempt plus at most 3 retries.
+    for attempt in 0..4u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
+        }
+
+        // A newer manual snipe or another auto swap may own the bench by now.
+        {
+            let mut tr = tracker.lock().await;
+            if tr.bench_retry_target != Some(champion_id) {
+                return;
+            }
+            if tr.manual_bench_hold.is_some() || tr.my_champ_id == champion_id {
+                // Nothing left to do: a manual pick landed, or we already hold it.
+                tr.bench_retry_target = None;
+                if tr.bot_expected_champ == Some(champion_id) {
+                    tr.bot_expected_champ = None;
+                }
+                emit_champ_select_state(&app, &tr);
+                return;
+            }
+        }
+
+        // A teammate may have taken it meanwhile: never POST for a champion that
+        // is no longer on the bench.
+        let Ok(session) = lcu.fetch_champ_select_session().await else {
+            abort_auto_bench_swap(&app, &tracker, champion_id, "已離開選角").await;
+            return;
+        };
+        if !session_bench_champion_ids(&session).contains(&champion_id) {
+            abort_auto_bench_swap(
+                &app,
+                &tracker,
+                champion_id,
+                &format!("英雄 (ID: {}) 已離開板凳", champion_id),
+            )
+            .await;
+            return;
+        }
+
+        // Mark the coming champion change as the bot's, not a manual pick.
+        {
+            let mut tr = tracker.lock().await;
+            tr.bot_expected_champ = Some(champion_id);
+        }
+        if lcu.swap_bench(champion_id).await.is_ok() {
+            let mut tr = tracker.lock().await;
+            tr.last_bench_swap_time = Some(Instant::now());
+            tr.bench_retry_target = None;
+            tr.bench_suggest_target = None;
+            // `bot_expected_champ` stays set so the WS event for this swap reads
+            // as a bot swap and takes no manual hold.
+            tr.last_bench_verdict = Some(format!("已自動換取板凳英雄 (ID: {})", champion_id));
+            emit_champ_select_state(&app, &tr);
+            drop(tr);
+            emit_lcu_assist(
+                &app,
+                serde_json::json!({ "kind": "clear", "target": "bench" }),
+            );
+            let _ = app.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "act",
+                    "title": "已自動換成板凳英雄",
+                    "reason": format!("板凳解鎖滿 3 秒後自動換取英雄 (ID: {})", champion_id),
+                }),
+            );
+            return;
+        }
+
+        // Clear the expectation so a later manual pick is still recognised.
+        {
+            let mut tr = tracker.lock().await;
+            if tr.bot_expected_champ == Some(champion_id) {
+                tr.bot_expected_champ = None;
+            }
+        }
+    }
+
+    abort_auto_bench_swap(
+        &app,
+        &tracker,
+        champion_id,
+        &format!("英雄 (ID: {}) 自動換角重試 4 次仍失敗，已停止", champion_id),
+    )
+    .await;
 }
 
 /// The champion our own cell currently holds in a champ select session.
@@ -538,9 +764,9 @@ fn session_my_champ_id(session: &serde_json::Value) -> i32 {
 
 /// Manual bench snipe from the overview card.
 ///
-/// Sends one immediate swap attempt; if the server still holds the 3s bench lock
-/// it starts a bounded, strictly sequential retry loop (one HTTP request at a
-/// time, `manual_snipe_interval_ms` apart, hard wall-clock and attempt caps). The
+/// Waits out the 3s bench lock first (re-checking the session every 150ms), then
+/// runs a bounded, strictly sequential retry loop (one HTTP request at a time,
+/// `manual_snipe_interval_ms` apart, hard wall-clock and attempt caps). The
 /// command itself always returns `Ok(())` so the UI never logs a spurious error
 /// while the retry loop is doing its job.
 #[tauri::command]
@@ -569,32 +795,6 @@ async fn swap_bench_champion(
         tr.manual_snipe_generation
     };
 
-    // First attempt: usually fails while a newly dropped card is server-locked.
-    if state.swap_bench(champion_id).await.is_ok() {
-        {
-            let mut tr = tracker.lock().await;
-            tr.last_bench_swap_time = Some(Instant::now());
-            tr.bench_retry_target = None;
-            tr.manual_snipe_target = None;
-            tr.manual_bench_hold = Some(champion_id);
-            // Not "expected": the WS event for this swap must not read as a bot
-            // swap, which would clear the hold again.
-            tr.bot_expected_champ = None;
-            tr.last_bench_verdict =
-                Some(format!("已手動換取英雄 (ID: {})，本局啟用手動保護", champion_id));
-            emit_champ_select_state(&app, &tr);
-        }
-        let _ = app.emit(
-            "lcu-log",
-            serde_json::json!({
-                "kind": "act",
-                "title": "已手動搶下板凳英雄",
-                "reason": format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
-            }),
-        );
-        return Ok(());
-    }
-
     // The UI shows `搶角中…` while `bench_retry_target` is set.
     {
         let tr = tracker.lock().await;
@@ -606,7 +806,7 @@ async fn swap_bench_champion(
             "kind": "sys",
             "title": "手動搶角排程中",
             "reason": format!(
-                "英雄 (ID: {}) 尚在板凳鎖定期，已啟動安全連點（每次等回報後間隔 {}ms，上限 3.2 秒）",
+                "英雄 (ID: {}) 尚在板凳鎖定期，已啟動安全連點（先等滿 3 秒解鎖，之後每次等回報後間隔 {}ms，上限 3.2 秒）",
                 champion_id, snipe_ms
             ),
         }),
@@ -617,12 +817,38 @@ async fn swap_bench_champion(
     let app_retry = app.clone();
 
     tauri::async_runtime::spawn(async move {
+        // The 3s bench lock is enforced here: nothing is sent before it expires.
+        // The wall-clock cap starts counting only after the wait, so a click at
+        // second 0 still gets its full retry budget.
+        if let Err(reason) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id).await {
+            let mut tr = tracker_retry.lock().await;
+            if tr.manual_snipe_generation == my_gen {
+                tr.manual_snipe_target = None;
+                if tr.bench_retry_target == Some(champion_id) {
+                    tr.bench_retry_target = None;
+                }
+                if tr.bot_expected_champ == Some(champion_id) {
+                    tr.bot_expected_champ = None;
+                }
+            }
+            emit_champ_select_state(&app_retry, &tr);
+            drop(tr);
+            let _ = app_retry.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "err",
+                    "title": "手動搶角已停止",
+                    "reason": reason,
+                }),
+            );
+            return;
+        }
+
         let started_at = Instant::now();
         let max_elapsed = std::time::Duration::from_millis(3200);
         // Never exceed today's attempt rate: 24 attempts at the 120ms default.
         let max_attempts: u32 = 3200_u64.div_ceil(snipe_ms).max(1) as u32;
         let mut attempts: u32 = 0;
-        let mut polls: u32 = 0;
 
         while started_at.elapsed() < max_elapsed && attempts < max_attempts {
             // 1. Cheap in-memory guards: a newer snipe or a takeover ends this loop.
@@ -647,7 +873,7 @@ async fn swap_bench_champion(
             }
 
             // 3. Poll the session on the first and every 3rd attempt: verify the
-            //    target still exists and wait out the server lock without POSTing.
+            //    target is still on the bench (the lock was waited out above).
             if attempts.is_multiple_of(3) {
                 let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
                     // No longer in champ select.
@@ -675,40 +901,9 @@ async fn swap_bench_champion(
                     return;
                 }
 
-                let still_on_bench = session
-                    .get("benchChampions")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter().any(|b| {
-                            b.get("championId").and_then(|v| v.as_i64())
-                                == Some(champion_id as i64)
-                        })
-                    })
-                    .unwrap_or(false);
-                if !still_on_bench {
+                if !session_bench_champion_ids(&session).contains(&champion_id) {
                     // A teammate took it, or it left the bench.
                     break;
-                }
-
-                let (target_is_our_offer, our_pick_time) = {
-                    let tr = tracker_retry.lock().await;
-                    (
-                        tr.our_offer_cards.contains(&champion_id),
-                        tr.our_pick_time,
-                    )
-                };
-                let lock_remaining =
-                    manual_bench_lock_remaining(&session, target_is_our_offer, our_pick_time);
-                if lock_remaining > 0.12 {
-                    tokio::time::sleep(std::time::Duration::from_secs_f64(
-                        lock_remaining.min(0.15),
-                    ))
-                    .await;
-                    polls += 1;
-                    if polls > 25 {
-                        break;
-                    }
-                    continue;
                 }
             }
 
@@ -1944,6 +2139,12 @@ async fn handle_champ_select_event(
 
     // 1. Suggest a bench swap FIRST (prioritized over teammate trades so the
     //    player sees their own favorite before an incoming trade).
+    //
+    // The LCU bench swap endpoint does not enforce the 3s lock the official
+    // client applies, so the app times it itself: record when each champion
+    // first appeared on the bench before any suggestion or automation runs.
+    update_bench_first_seen(&mut tr, data);
+
     let bench_enabled = data
         .get("benchEnabled")
         .and_then(|v| v.as_bool())
@@ -2013,9 +2214,10 @@ async fn handle_champ_select_event(
             } = decision
             {
                 tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
-                // Assist mode: only suggest the swap. `swap_bench_champion` sends it
-                // once the player clicks, and only then does the backend touch the LCU.
-                // Emit once per suggested target so event bursts do not spam the UI.
+                // By default only suggest the swap: `swap_bench_champion` sends it
+                // once the player clicks. With `auto_bench_execute` on, the backend
+                // sends it itself after the 3s bench lock. Emit once per suggested
+                // target so event bursts do not spam the UI.
                 if tr.bench_suggest_target != Some(target_champ_id) {
                     tr.bench_suggest_target = Some(target_champ_id);
                     emit_lcu_assist(
@@ -2034,6 +2236,31 @@ async fn handle_champ_select_event(
                             "reason": reason
                         }),
                     );
+                }
+
+                // Opt-in automation: send the swap ourselves, but only after the
+                // local 3s bench lock has expired. Off by default, and never
+                // while a manual snipe or another auto swap owns the bench.
+                if settings.auto_bench_execute
+                    && tr.manual_snipe_target.is_none()
+                    && tr.bench_retry_target.is_none()
+                {
+                    tr.bench_retry_target = Some(target_champ_id);
+                    emit_champ_select_state(app_handle, &tr);
+                    let app_auto = app_handle.clone();
+                    let lcu_auto: SharedLcu = Arc::clone(lcu);
+                    let tracker_auto: SharedTracker = Arc::clone(tracker_lock);
+                    let retry_ms = config.bench_retry_interval_ms;
+                    spawn(async move {
+                        run_auto_bench_swap(
+                            app_auto,
+                            lcu_auto,
+                            tracker_auto,
+                            target_champ_id,
+                            retry_ms,
+                        )
+                        .await;
+                    });
                 }
             }
         }
@@ -2293,7 +2520,7 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, champ_select_phase, manual_bench_lock_remaining,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, champ_select_phase,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
         validate_trade_chat_text,
     };
@@ -2431,40 +2658,21 @@ mod tests {
     }
 
     #[test]
-    fn test_manual_bench_lock_remaining_counts_down_to_unlock() {
-        let now_ms = now_epoch_ms();
-
-        // 45s FINALIZATION phase, 43s left => 2s elapsed => ~0.85s of lock left.
-        let session = json!({
-            "timer": {
-                "phase": "FINALIZATION",
-                "totalTimeInPhase": 45000,
-                "adjustedTimeLeftInPhase": 43000,
-                "internalNowInEpochMs": now_ms
-            }
-        });
-        let remaining = manual_bench_lock_remaining(&session, false, None);
-        assert!((0.80..=0.90).contains(&remaining), "got {}", remaining);
-
-        // Past the 3s unlock: nothing left to wait for.
-        let unlocked = json!({
-            "timer": {
-                "phase": "FINALIZATION",
-                "totalTimeInPhase": 45000,
-                "adjustedTimeLeftInPhase": 38000,
-                "internalNowInEpochMs": now_ms
-            }
-        });
-        assert_eq!(manual_bench_lock_remaining(&unlocked, false, None), 0.0);
-
-        // A teammate's champion during the reveal phase: poll every 150ms.
-        let reveal = json!({
-            "timer": { "phase": "BAN_PICK", "totalTimeInPhase": 15000, "adjustedTimeLeftInPhase": 9000 }
-        });
-        assert_eq!(manual_bench_lock_remaining(&reveal, false, None), 0.15);
-
-        // Our own offered card: the 3s lock starts at our own pick time.
-        let ours = manual_bench_lock_remaining(&reveal, true, Some(std::time::Instant::now()));
-        assert!((2.80..=2.85).contains(&ours), "got {}", ours);
+    fn test_bench_lock_remaining_secs_honours_the_local_three_second_lock() {
+        // A champion that just landed on the bench stays locked.
+        assert!(bench_lock_remaining_secs(Some(2.9), "BAN_PICK", None) > 0.0);
+        // The full lock is served.
+        assert_eq!(bench_lock_remaining_secs(Some(3.0), "BAN_PICK", None), 0.0);
+        // Never seen: be conservative and wait the whole lock.
+        assert_eq!(bench_lock_remaining_secs(None, "BAN_PICK", None), 3.0);
+        // FINALIZATION keeps the phase clock as a lower bound: seen 10s ago but
+        // the phase only started 1s ago => 2s left.
+        let remaining = bench_lock_remaining_secs(Some(10.0), "FINALIZATION", Some(1.0));
+        assert!((1.999..=2.001).contains(&remaining), "got {}", remaining);
+        // Both terms satisfied => nothing left to wait for.
+        assert_eq!(
+            bench_lock_remaining_secs(Some(10.0), "FINALIZATION", Some(5.0)),
+            0.0
+        );
     }
 }

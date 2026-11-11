@@ -112,11 +112,16 @@
               <label class="sw"><input type="checkbox" checked id="cfgLockStopBench"><i></i></label>
             </div>
             <div class="set-row">
+              <span class="set-lab">自動換成建議英雄</span>
+              <label class="sw"><input type="checkbox" id="cfgAutoBenchExecute"><i></i></label>
+            </div>
+            <div class="set-row">
               <span class="set-lab">手動搶角間隔</span>
               <span class="sliderbox"><input type="range" min="80" max="500" step="10" value="120" data-suffix=" ms" id="cfgManualSnipeMs"><span class="val"></span></span>
             </div>
           </div>
           <div class="hint">板凳解鎖後比對分數，在總覽標出建議的英雄</div>
+          <div class="hint">預設關閉。開啟後會自動換，並照遊戲規則等英雄上板凳滿 3 秒</div>
           <div class="hint">間隔越短越快，但太短可能被客戶端拒絕；預設 120 ms</div>
         </div>
 
