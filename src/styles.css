@@ -137,13 +137,6 @@ body {
 .nav svg { width: 16px; height: 16px; flex: none; }
 .nav:hover { color: var(--muted); }
 .nav.on { color: var(--text); background: var(--panel2); box-shadow: inset 2px 0 0 var(--accent); font-weight: 500; }
-.side-foot {
-  margin-top: auto;
-  padding: 12px 8px 4px;
-  border-top: 1px solid var(--line);
-}
-.master { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
-
 .content {
   flex: 1;
   overflow-y: auto;

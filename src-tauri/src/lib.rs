@@ -157,7 +157,6 @@ const TRAY_TOOLTIP_IDLE: &str = "ARAMPilot — 等待客戶端...";
 struct TrayHandles {
     status_lcu: MenuItem<Wry>,
     status_phase: MenuItem<Wry>,
-    master: CheckMenuItem<Wry>,
     accept: CheckMenuItem<Wry>,
     card: CheckMenuItem<Wry>,
     bench: CheckMenuItem<Wry>,
@@ -172,7 +171,6 @@ fn sync_tray_checks(app: &tauri::AppHandle, cfg: &AppConfig) {
     let Some(handles) = app.try_state::<TrayHandles>() else {
         return;
     };
-    let _ = handles.master.set_checked(cfg.master_enabled);
     let _ = handles.accept.set_checked(cfg.auto_accept);
     let _ = handles.card.set_checked(cfg.aram_settings.auto_card_select);
     let _ = handles.bench.set_checked(cfg.aram_settings.auto_bench_swap);
@@ -272,10 +270,6 @@ async fn handle_tray_toggle(
 
     // Both ARAM and Mayhem follow the tray toggle so the modes never drift apart.
     let (label, enabled) = match id {
-        "toggle_master" => {
-            cfg.master_enabled = !cfg.master_enabled;
-            ("全部自動化 (總開關)", cfg.master_enabled)
-        }
         "toggle_accept" => {
             cfg.auto_accept = !cfg.auto_accept;
             ("自動接受對戰", cfg.auto_accept)
@@ -1099,15 +1093,6 @@ fn build_tray(
     let status_phase =
         MenuItem::with_id(app, "status_phase", "狀態：等待連線", false, None::<&str>)?;
     let sep_status = PredefinedMenuItem::separator(app)?;
-    let master = CheckMenuItem::with_id(
-        app,
-        "toggle_master",
-        "⚡ 全部自動化 (總開關)",
-        true,
-        initial_cfg.master_enabled,
-        None::<&str>,
-    )?;
-    let sep_toggles = PredefinedMenuItem::separator(app)?;
     let accept = CheckMenuItem::with_id(
         app,
         "toggle_accept",
@@ -1168,8 +1153,6 @@ fn build_tray(
             &status_lcu,
             &status_phase,
             &sep_status,
-            &master,
-            &sep_toggles,
             &accept,
             &card,
             &bench,
@@ -1237,7 +1220,6 @@ fn build_tray(
     app.manage(TrayHandles {
         status_lcu,
         status_phase,
-        master,
         accept,
         card,
         bench,

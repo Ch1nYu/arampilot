@@ -508,6 +508,10 @@ impl ConfigManager {
                 return (default_config, false);
             }
         };
+        // A file that loads belongs to the user: `master_enabled` is an internal
+        // safety guard for the fallback run only, so a legacy `false` no longer
+        // keeps automation off. Each feature switch decides on its own.
+        config.master_enabled = true;
         {
             let aram_before = config.aram_profile.clone();
             let mayhem_before = config.mayhem_profile.clone();
@@ -1898,6 +1902,26 @@ mod tests {
         let (cfg, failed) = ConfigManager::at(bad_dir).load_checked();
         assert!(failed);
         assert!(!cfg.master_enabled);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_loaded_config_forces_master_enabled_on() {
+        let dir = temp_case("master_on");
+        fs::write(
+            dir.join("config.json"),
+            "{\"master_enabled\": false, \"accent_color\": \"violet\"}",
+        )
+        .unwrap();
+        let (cfg, failed) = ConfigManager::at(dir.clone()).load_checked();
+        assert!(!failed, "the file loads, so this is not the fallback run");
+        assert_eq!(cfg.accent_color, "violet");
+        assert!(
+            cfg.master_enabled,
+            "a legacy false must not keep every automation off; the feature switches decide"
+        );
+        // The guard itself is unchanged: only the unreadable fallback turns it off.
+        assert!(!AppConfig::safe_fallback().master_enabled);
         let _ = fs::remove_dir_all(dir);
     }
 

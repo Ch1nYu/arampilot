@@ -411,6 +411,14 @@ let stopBenchRemainingSec = 5;
 let benchRetryIntervalMs = 80;
 let chatDelaySec = 1;
 
+/**
+ * Internal safety guard owned by the backend: false only when the config file
+ * could not be loaded and the app runs on defaults. It has no switch any more;
+ * we carry the last value the backend gave us back on every save so a fallback
+ * run stays guarded.
+ */
+let masterEnabled = true;
+
 const ACCEPT_MODE_OPTIONS = ["ARAM", "Mayhem", "其他"];
 let acceptModes: string[] = ["ARAM", "Mayhem"];
 
@@ -2526,7 +2534,7 @@ function collectConfig(): AppConfig {
   }));
 
   return {
-    master_enabled: checkboxValue("master", true),
+    master_enabled: masterEnabled,
     accent_color: localStorage.getItem("app-accent") || "ivory",
     auto_summoner_spells: checkboxValue("cfgAutoSpells", true),
     remember_champion_spells: checkboxValue("cfgRememberSpells", true),
@@ -2608,10 +2616,6 @@ function debouncedSaveConfig() {
   }, 350);
 }
 
-document.getElementById("master")?.addEventListener("change", () => {
-  debouncedSaveConfig();
-});
-
 /* ---------- LCU Backend Integration ---------- */
 let isLcuConnected = false;
 let lastKnownPhase = "";
@@ -2638,7 +2642,7 @@ async function initLcuBackend() {
   });
 
   await listen<string>("lcu-ff-alert", (event) => {
-    if (!(checkboxValue("master", true) && checkboxValue("cfgAutoFf", false))) return;
+    if (!checkboxValue("cfgAutoFf", false)) return;
     const methods = activeChkValues("cfgFfMethods");
     if (methods.includes("sound")) playBeepAlert();
     if (methods.includes("notification")) showDesktopNotification("⏰ 投降安全提醒", event.payload);
@@ -2737,7 +2741,7 @@ function richerProfile(aram: ProfileItemConfig[], mayhem: ProfileItemConfig[]): 
 function applyConfigToUI(cfg: AppConfig) {
   if (cfg.accent_color) setAccent(cfg.accent_color);
 
-  setCheckbox("master", cfg.master_enabled ?? true);
+  masterEnabled = cfg.master_enabled ?? true;
   setCheckbox("cfgAutoSpells", cfg.auto_summoner_spells ?? true);
   setCheckbox("cfgRememberSpells", cfg.remember_champion_spells ?? true);
   setSegValue("cfgPrimarySpellKey", (cfg.primary_spell_key || "D").toUpperCase() === "F" ? "F" : "D");
