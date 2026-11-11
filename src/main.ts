@@ -25,6 +25,41 @@ import { escapeHtml, ICON, img } from "./html";
 import { addLog, initLogFilter, pad2 } from "./logs";
 import { choiceDialog, confirmDialog, promptDialog } from "./dialogs";
 import {
+  activeChkValues,
+  activeSegValue,
+  checkboxValue,
+  initFormControls,
+  numberValue,
+  setCheckbox,
+  setChkValues,
+  setRangeValue,
+  setSegValue,
+  setTextInput,
+  textValue,
+} from "./formControls";
+import {
+  defaultModeSettings,
+  normalizeAcceptModes,
+  normalizeModeSettings,
+  REJECT_TIER_VALUES,
+  rejectTiersToValue,
+  richerProfile,
+} from "./modeSettings";
+import {
+  calculateScores,
+  createDefaultRoster,
+  ensureAllBuiltinChampions,
+  FLAG_ICON,
+  FLAG_NAME,
+  FLAGS,
+  TIER_NAMES,
+  TIER_ORDER,
+  TIERS,
+  UNRANKED_BASELINE_SCORE,
+} from "./tiers";
+import { PHASE_LABELS, queueModeLabel, signedDiff } from "./queues";
+import { playBeepAlert, showDesktopNotification } from "./alerts";
+import {
   DEFAULT_SECONDARY_SPELL_ID,
   EXTRA_SECONDARY_SPELL_IDS,
   FLASH_SPELL_ID,
@@ -113,153 +148,9 @@ document.addEventListener("click", (e) => {
 });
 
 /* ---------- Generic Controls ---------- */
-const rangeUpdaters = new Map<string, () => void>();
-const gateUpdaters = new Map<string, () => void>();
-
-document.querySelectorAll("[data-seg]").forEach((seg) =>
-  seg.addEventListener("click", (e) => {
-    const b = (e.target as HTMLElement).closest("button");
-    if (!b) return;
-    seg.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    seg.dispatchEvent(new Event("change"));
-    debouncedSaveConfig();
-  })
-);
-document.querySelectorAll("[data-chk]").forEach((c) =>
-  c.addEventListener("click", (e) => {
-    const b = (e.target as HTMLElement).closest("button");
-    if (b) {
-      b.classList.toggle("on");
-      debouncedSaveConfig();
-    }
-  })
-);
-// Sliders may use fractional steps (0.1); trim float noise and trailing zeros.
-function formatRangeLabel(input: HTMLInputElement): string {
-  const raw = Number(input.value);
-  const shown = Number.isFinite(raw) ? String(Math.round(raw * 10) / 10) : input.value;
-  if (input.dataset.zero && Number(shown) === 0) return input.dataset.zero;
-  return (input.dataset.prefix || "") + shown + (input.dataset.suffix || "");
-}
-document.querySelectorAll("input[type=range]").forEach((r) => {
-  const input = r as HTMLInputElement;
-  const numBuddy =
-    input.nextElementSibling instanceof HTMLInputElement && input.nextElementSibling.type === "number"
-      ? (input.nextElementSibling as HTMLInputElement)
-      : null;
-  const out = input.parentElement?.querySelector(".val") as HTMLElement | null;
-  const paint = () => {
-    const min = Number(input.min || 0);
-    const max = Number(input.max || 100);
-    const frac = max > min ? (Number(input.value) - min) / (max - min) : 0;
-    // Unitless fraction; CSS aligns the fill edge to the thumb center.
-    input.style.setProperty("--p", String(frac));
-  };
-  const upd = () => {
-    paint();
-    if (numBuddy && numBuddy.value !== input.value) {
-      numBuddy.value = input.value;
-    }
-    if (!out) return;
-    out.textContent = formatRangeLabel(input);
-  };
-  input.addEventListener("input", () => {
-    upd();
-    debouncedSaveConfig();
-  });
-  if (numBuddy) {
-    numBuddy.addEventListener("input", () => {
-      const min = Number(input.min || 0);
-      const max = Number(input.max || 40);
-      const raw = Number(numBuddy.value);
-      if (Number.isFinite(raw)) {
-        const clamped = Math.max(min, Math.min(max, Math.round(raw)));
-        input.value = String(clamped);
-        if (out) out.textContent = formatRangeLabel(input);
-        input.dispatchEvent(new Event("change"));
-        debouncedSaveConfig();
-      }
-    });
-    numBuddy.addEventListener("change", () => {
-      numBuddy.value = input.value;
-    });
-  }
-  upd();
-  if (input.id) rangeUpdaters.set(input.id, upd);
-});
-document.querySelectorAll("[data-gate]").forEach((sw) => {
-  const input = sw as HTMLInputElement;
-  const targetId = input.dataset.gate;
-  const targetEl = targetId ? document.getElementById(targetId) : null;
-  const upd = () => targetEl?.classList.toggle("dim-off", !input.checked);
-  input.addEventListener("change", () => {
-    upd();
-    debouncedSaveConfig();
-  });
-  upd();
-  if (input.id) gateUpdaters.set(input.id, upd);
-});
-
-function setCheckbox(id: string, on: boolean) {
-  const input = document.getElementById(id) as HTMLInputElement | null;
-  if (!input) return;
-  input.checked = on;
-  gateUpdaters.get(id)?.();
-}
-
-function setRangeValue(id: string, value: number) {
-  const input = document.getElementById(id) as HTMLInputElement | null;
-  if (!input) return;
-  input.value = String(value);
-  rangeUpdaters.get(id)?.();
-}
-
-function setTextInput(id: string, value: string) {
-  const input = document.getElementById(id) as HTMLInputElement | null;
-  if (input) input.value = value;
-}
-
-function setSegValue(id: string, value: string) {
-  document.querySelectorAll<HTMLElement>(`#${id} button`).forEach((b) => {
-    b.classList.toggle("on", (b.dataset.v || "") === value);
-  });
-}
-
-function activeSegValue(id: string): string {
-  const el = document.querySelector(`#${id} .on`) as HTMLElement | null;
-  return el?.dataset.v || "";
-}
-
-function setChkValues(id: string, values: string[]) {
-  document.querySelectorAll<HTMLElement>(`#${id} button`).forEach((b) => {
-    b.classList.toggle("on", values.includes(b.dataset.v || ""));
-  });
-}
-
-function activeChkValues(id: string): string[] {
-  return Array.from(document.querySelectorAll<HTMLElement>(`#${id} button.on`)).map((b) => b.dataset.v || "");
-}
+initFormControls(debouncedSaveConfig);
 
 /* ---------- Shared Mode Settings (ARAM + Mayhem) ---------- */
-function defaultModeSettings(): ModeSettings {
-  return {
-    auto_card_select: true,
-    card_select_delay_sec: 1.5,
-    card_select_strategy: "highest_score",
-    auto_card_execute: false,
-    auto_bench_swap: true,
-    auto_bench_execute: false,
-    bench_diff_threshold: 10,
-    lock_stop_bench: true,
-    stop_bench_remaining_sec: 5,
-    auto_trade: true,
-    trade_accept_diff: 10,
-    trade_reject_tiers: ["本命"],
-    friend_trade_policy: "manual",
-    default_secondary_spell: DEFAULT_SECONDARY_SPELL_ID,
-  };
-}
-
 let currentSettings: ModeSettings = defaultModeSettings();
 let ffTime = "08:00";
 
@@ -280,38 +171,7 @@ let chatDelaySec = 1;
  */
 let masterEnabled = true;
 
-const ACCEPT_MODE_OPTIONS = ["ARAM", "Mayhem", "其他"];
 let acceptModes: string[] = ["ARAM", "Mayhem"];
-
-const REJECT_TIER_VALUES: Record<string, string[]> = {
-  "本命": ["本命"],
-  "本命愛角": ["本命", "愛角"],
-  "": [],
-};
-
-function rejectTiersToValue(tiers: string[]): string {
-  const top = tiers.includes("本命");
-  const love = tiers.includes("愛角");
-  if (top && love) return "本命愛角";
-  return top ? "本命" : "";
-}
-
-function checkboxValue(id: string, fallback: boolean): boolean {
-  const el = document.getElementById(id) as HTMLInputElement | null;
-  return el ? el.checked : fallback;
-}
-
-function numberValue(id: string, fallback: number): number {
-  const el = document.getElementById(id) as HTMLInputElement | null;
-  const v = el ? Number(el.value) : NaN;
-  return Number.isFinite(v) ? v : fallback;
-}
-
-function textValue(id: string, fallback: string): string {
-  const el = document.getElementById(id) as HTMLInputElement | null;
-  const v = el?.value.trim() || "";
-  return v || fallback;
-}
 
 function readModeSettingsFromUI(): ModeSettings {
   const reject = activeSegValue("rejTier");
@@ -623,49 +483,7 @@ SAVE_ON_CHANGE_IDS.forEach((id) => {
 document.getElementById("cfgRememberSpells")?.addEventListener("change", () => renderOverviewColumns());
 
 /* ---------- Champions & Tiers Data ---------- */
-const UNRANKED_BASELINE_SCORE = 40;
-
-function createDefaultRoster(): TierChampion[] {
-  return BUILTIN_CHAMPIONS.map((c) => ({ id: c.id, n: c.n, t: "未分類", f: "" }));
-}
-
-function ensureAllBuiltinChampions(target: TierChampion[]) {
-  const byId = new Map(target.map((c) => [c.id, c]));
-  for (const item of BUILTIN_CHAMPIONS) {
-    if (!byId.has(item.id)) {
-      const fresh: TierChampion = { id: item.id, n: item.n, t: "未分類", f: "" };
-      target.push(fresh);
-      byId.set(item.id, fresh);
-    }
-  }
-}
-
 let profileList: TierChampion[] = createDefaultRoster();
-
-const TIERS: [string, number | null, number | null][] = [
-  ["本命", 100, 90],
-  ["愛角", 89, 75],
-  ["順手", 74, 60],
-  ["勉強", 59, 40],
-  ["封印", 39, 10],
-  ["未分類", null, null],
-];
-const TIER_NAMES = TIERS.map(([t]) => t);
-const FLAGS = ["", "lock", "give", "nograb"];
-const FLAG_ICON: Record<string, string> = { lock: "🔒", give: "🎁", nograb: "⛔" };
-const FLAG_NAME: Record<string, string> = { lock: "不換出", give: "隨時可換", nograb: "不搶" };
-
-function calculateScores(list: TierChampion[]): Record<number, number | null> {
-  const out: Record<number, number | null> = {};
-  TIERS.forEach(([t, hi, lo]) => {
-    const members = list.filter((c) => c.t === t);
-    members.forEach((c, i) => {
-      out[c.id] =
-        hi == null || lo == null ? null : Math.round(hi - (hi - lo) * (members.length > 1 ? i / (members.length - 1) : 0));
-    });
-  });
-  return out;
-}
 
 function renderTiers() {
   const list = profileList;
@@ -928,7 +746,6 @@ let pkTargetScope = "本命";
 
 const flashSkippedIds = new Set<number>();
 const flashSeenAllIds = new Set<number>();
-const TIER_ORDER = ["本命", "愛角", "順手", "勉強", "封印", "未分類"];
 
 function findTierInsertIndex(list: TierChampion[], targetTier: string): number {
   const lastInTier = list.map((c) => c.t).lastIndexOf(targetTier);
@@ -2163,71 +1980,6 @@ document.getElementById("importFile")?.addEventListener("change", async (e) => {
   }
 });
 
-/* ---------- Web Audio Alert (Synthesized Beep) ---------- */
-// One AudioContext for the whole session. Creating a fresh one per alert costs
-// hundreds of ms on Windows/WebView2, can hit the browser's concurrent-context
-// quota, and starts suspended — the main source of the perceived ff delay.
-// Reusing one context + resuming when suspended makes the beep fire instantly.
-let beepCtx: AudioContext | null = null;
-function getBeepCtx(): AudioContext | null {
-  const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioCtx) return null;
-  if (!beepCtx) {
-    beepCtx = new AudioCtx();
-  }
-  if (beepCtx.state === "suspended") {
-    void beepCtx.resume();
-  }
-  return beepCtx;
-}
-
-function playBeepAlert() {
-  try {
-    const ctx = getBeepCtx();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-
-    // First tone: 880 Hz
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.frequency.setValueAtTime(880, now);
-    gain1.gain.setValueAtTime(0.2, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.18);
-
-    // Second tone: 1320 Hz
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.frequency.setValueAtTime(1320, now + 0.2);
-    gain2.gain.setValueAtTime(0.25, now + 0.2);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.52);
-    osc2.connect(gain2);
-    gain2.connect(ctx.destination);
-    osc2.start(now + 0.2);
-    osc2.stop(now + 0.52);
-  } catch (e) {
-    console.warn("AudioContext tone generation failed:", e);
-  }
-}
-
-function showDesktopNotification(title: string, body: string) {
-  if (typeof Notification === "undefined") return;
-  try {
-    if (Notification.permission === "granted") {
-      new Notification(title, { body });
-    } else if (Notification.permission !== "denied") {
-      void Notification.requestPermission().then((permission) => {
-        if (permission === "granted") new Notification(title, { body });
-      });
-    }
-  } catch (e) {
-    console.warn("Desktop notification failed:", e);
-  }
-}
-
 /* ---------- Config Persistence (Debounced) ---------- */
 function collectConfig(): AppConfig {
   // Snapshot the visible form into the single shared settings/profile state.
@@ -2440,17 +2192,6 @@ async function pollLiveOverviewStatus(initial: boolean) {
   }
 }
 
-/** Pick the richer of the two mirrored profiles (classified count first, then 本命 count). */
-function richerProfile(aram: ProfileItemConfig[], mayhem: ProfileItemConfig[]): ProfileItemConfig[] {
-  const classified = (list: ProfileItemConfig[]) => list.filter((p) => p.tier !== "未分類").length;
-  const mainPicks = (list: ProfileItemConfig[]) => list.filter((p) => p.tier === "本命").length;
-  const mayhemClassified = classified(mayhem);
-  const aramClassified = classified(aram);
-  if (mayhemClassified !== aramClassified) return mayhemClassified > aramClassified ? mayhem : aram;
-  if (mayhem.length === 0) return aram;
-  return mainPicks(mayhem) > mainPicks(aram) ? mayhem : aram;
-}
-
 function applyConfigToUI(cfg: AppConfig) {
   if (cfg.accent_color) setAccent(cfg.accent_color);
   applyUiScale((cfg.ui_scale ?? 1) * 100);
@@ -2551,51 +2292,6 @@ function applyConfigToUI(cfg: AppConfig) {
   renderRankingSaveBar();
 }
 
-function normalizeAcceptModes(value: unknown): string[] {
-  const list = Array.isArray(value)
-    ? value.filter((x): x is string => typeof x === "string" && ACCEPT_MODE_OPTIONS.includes(x))
-    : [];
-  return list.length > 0 ? list : ["ARAM", "Mayhem"];
-}
-
-function pickBool(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function pickNumber(value: unknown, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function pickString(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.length > 0 ? value : fallback;
-}
-
-function normalizeModeSettings(src: ModeSettings | undefined): ModeSettings {
-  const d = defaultModeSettings();
-  const s = (src && typeof src === "object" ? src : {}) as Partial<ModeSettings>;
-  return {
-    auto_card_select: pickBool(s.auto_card_select, d.auto_card_select),
-    card_select_delay_sec: pickNumber(s.card_select_delay_sec, d.card_select_delay_sec),
-    card_select_strategy: pickString(s.card_select_strategy, d.card_select_strategy),
-    auto_card_execute: pickBool(s.auto_card_execute, d.auto_card_execute),
-    auto_bench_swap: pickBool(s.auto_bench_swap, d.auto_bench_swap),
-    auto_bench_execute: pickBool(s.auto_bench_execute, d.auto_bench_execute),
-    bench_diff_threshold: pickNumber(s.bench_diff_threshold, d.bench_diff_threshold),
-    lock_stop_bench: pickBool(s.lock_stop_bench, d.lock_stop_bench),
-    stop_bench_remaining_sec: pickNumber(s.stop_bench_remaining_sec, d.stop_bench_remaining_sec),
-    auto_trade: pickBool(s.auto_trade, d.auto_trade),
-    trade_accept_diff: pickNumber(s.trade_accept_diff, d.trade_accept_diff),
-    trade_reject_tiers: Array.isArray(s.trade_reject_tiers)
-      ? s.trade_reject_tiers.filter((x): x is string => typeof x === "string")
-      : [...d.trade_reject_tiers],
-    friend_trade_policy: pickString(s.friend_trade_policy, d.friend_trade_policy),
-    default_secondary_spell: isSupportedSecondarySpell(s.default_secondary_spell)
-      ? s.default_secondary_spell
-      : d.default_secondary_spell,
-  };
-}
-
 function updateConnectionUI(connected: boolean, port?: number) {
   const pill = document.getElementById("lcuPill");
   if (pill) {
@@ -2683,25 +2379,7 @@ function handleLcuEvent(event: LcuEvent) {
 }
 
 /* ---------- Queue mode mapping ---------- */
-const MAYHEM_QUEUE_IDS = new Set([2400, 2410, 3270]);
-const ARAM_QUEUE_IDS = new Set([450, 720, 721, 860, 3200, 3210, 3220, 3230]);
-const PHASE_LABELS: Record<string, string> = {
-  None: "待機",
-  Lobby: "大廳",
-  Matchmaking: "配對中",
-  ReadyCheck: "接受對戰",
-  ChampSelect: "選角",
-  InProgress: "遊戲中",
-  EndOfGame: "結算",
-};
 let currentQueueId: number | null = null;
-
-function queueModeLabel(queueId: number | null | undefined): string {
-  if (queueId == null) return "其他";
-  if (MAYHEM_QUEUE_IDS.has(queueId)) return "Mayhem";
-  if (ARAM_QUEUE_IDS.has(queueId)) return "ARAM";
-  return "其他";
-}
 
 function currentModeLabel(): string {
   return currentQueueId == null ? "模式未知" : queueModeLabel(currentQueueId);
@@ -2713,11 +2391,6 @@ async function refreshCurrentQueueId() {
   } catch (e) {
     console.warn("Could not resolve current queue id:", e);
   }
-}
-
-function signedDiff(diff: number | null): string {
-  if (diff == null) return "—";
-  return `${diff >= 0 ? "+" : ""}${diff}`;
 }
 
 const EMPTY_UI_STATE: ChampSelectUiState = {
