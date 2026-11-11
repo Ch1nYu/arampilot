@@ -21,192 +21,34 @@ import {
   type RankingSave,
   type RankingSaveItem,
 } from "./rankingSaves";
-
-interface ChampionItem {
-  id: number;
-  name: string;
-  title?: string;
-  roles?: string[];
-}
-
-interface ChampionMasteryItem {
-  championId: number;
-  championLevel: number;
-  championPoints: number;
-  lastPlayTime: number;
-}
-
-interface ConnectionStatus {
-  connected: boolean;
-  port?: number;
-}
-
-interface ActiveAccount {
-  puuid: string;
-  display_name: string;
-}
-
-interface LcuEvent {
-  uri: string;
-  eventType: string;
-  data: any;
-}
-
-/** Backend-owned champ select state (verdicts are never recomputed here). */
-interface ChampSelectUiState {
-  manual_hold_champ_id: number | null;
-  bench_retry_target: number | null;
-  bench_verdict: string | null;
-  trade_verdict: string | null;
-  allied_puuids: string[];
-  allied_summoner_ids: number[];
-}
-
-interface TierChampion {
-  id: number;
-  n: string;
-  t: string; // "本命", "愛角", "順手", "勉強", "封印", "未分類"
-  f: string; // "", "lock", "give", "nograb"
-  secSpell?: number; // remembered secondary summoner spell id
-}
-
-interface ModeSettings {
-  auto_card_select: boolean;
-  card_select_delay_sec: number;
-  card_select_strategy: string;
-  auto_card_execute: boolean;
-  auto_bench_swap: boolean;
-  auto_bench_execute: boolean;
-  bench_diff_threshold: number;
-  lock_stop_bench: boolean;
-  stop_bench_remaining_sec: number;
-  auto_trade: boolean;
-  trade_accept_diff: number;
-  trade_reject_tiers: string[];
-  friend_trade_policy: string;
-  default_secondary_spell: number;
-}
-
-interface ProfileItemConfig {
-  id: number;
-  name: string;
-  tier: string;
-  flag: string;
-  elo?: number;
-  matches?: number;
-  secondary_spell?: number;
-}
-
-interface AppConfig {
-  master_enabled: boolean;
-  accent_color: string;
-  ui_scale?: number;
-  auto_summoner_spells: boolean;
-  remember_champion_spells?: boolean;
-  primary_spell_key: string; // "D" | "F"
-  auto_accept: boolean;
-  accept_delay_sec: number;
-  accept_modes: string[];
-  accept_notify: string; // "mute", "sound", "notification"
-  aram_settings: ModeSettings;
-  mayhem_settings: ModeSettings;
-  auto_chat_on_swap: boolean;
-  chat_delay_sec: number;
-  chat_messages: string[];
-  chat_on_accept_teammate: boolean;
-  chat_on_teammate_accept_mine: boolean;
-  ff_reminder: boolean;
-  ff_time_aram: string;
-  ff_time_mayhem: string;
-  ff_kill_diff_threshold: number;
-  ff_cooldown_reminder: boolean;
-  ff_copy_clipboard: boolean;
-  ff_play_sound: boolean;
-  ff_desktop_notify: boolean;
-  ff_lead_sec: number;
-  bench_retry_interval_ms: number;
-  manual_snipe_interval_ms: number;
-  client_close_action: string; // "wait", "exit"
-  close_to_tray: boolean;
-  auto_start: boolean;
-  aram_profile: ProfileItemConfig[];
-  mayhem_profile: ProfileItemConfig[];
-  ranking_saves: RankingSaveConfig[];
-  active_ranking_save: string;
-}
-
-/** One named ranking save as the config file stores it (active save: `items` empty). */
-interface RankingSaveConfig {
-  id: string;
-  name: string;
-  items: ProfileItemConfig[];
-}
-
-const ICON = (id: number) =>
-  `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`;
-
-/* ---------- Summoner Spells ---------- */
-const SPELL_ICON_BASE =
-  "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/";
-
-interface SummonerSpellMeta {
-  id: number;
-  name: string;
-  icon: string;
-}
-
-const FLASH_SPELL_ID = 4;
-const SUMMONER_SPELLS: Record<number, SummonerSpellMeta> = {
-  4: { id: 4, name: "閃現", icon: "summoner_flash.png" },
-  6: { id: 6, name: "鬼步", icon: "summoner_haste.png" },
-  32: { id: 32, name: "雪球", icon: "summoner_mark.png" },
-  13: { id: 13, name: "清晰", icon: "summonermana.png" },
-  3: { id: 3, name: "虛弱", icon: "summoner_exhaust.png" },
-  14: { id: 14, name: "點燃", icon: "summonerignite.png" },
-  21: { id: 21, name: "光盾", icon: "summonerbarrier.png" },
-  7: { id: 7, name: "治癒", icon: "summoner_heal.png" },
-  1: { id: 1, name: "淨化", icon: "summoner_boost.png" },
-};
-/** Always visible secondary options: Ghost and Mark (snowball). */
-const MAIN_SECONDARY_SPELL_IDS = [6, 32];
-/** Secondary options hidden behind the「其他」tray. */
-const EXTRA_SECONDARY_SPELL_IDS = [13, 3, 14, 21, 7, 1];
-const DEFAULT_SECONDARY_SPELL_ID = 6;
-
-function isSupportedSecondarySpell(id: unknown): id is number {
-  return typeof id === "number" && [...MAIN_SECONDARY_SPELL_IDS, ...EXTRA_SECONDARY_SPELL_IDS].includes(id);
-}
-
-function spellName(id: number): string {
-  return SUMMONER_SPELLS[id]?.name || "未知技能";
-}
-
-function spellIconHtml(id: number): string {
-  const meta = SUMMONER_SPELLS[id];
-  return `<img class="spell-ic" src="${SPELL_ICON_BASE}${meta?.icon || "summoner_flash.png"}" data-n="${escapeHtml(
-    meta?.name || "技能"
-  )}" alt="">`;
-}
-
-/** D is spell1Id and F is spell2Id; Flash takes the primary key. */
-function resolveSpellPair(secondaryId: number, primaryKey: string): [number, number] {
-  return primaryKey.toUpperCase() === "F" ? [secondaryId, FLASH_SPELL_ID] : [FLASH_SPELL_ID, secondaryId];
-}
+import { escapeHtml, ICON, img } from "./html";
+import { addLog, initLogFilter, pad2 } from "./logs";
+import { choiceDialog, confirmDialog, promptDialog } from "./dialogs";
+import {
+  DEFAULT_SECONDARY_SPELL_ID,
+  EXTRA_SECONDARY_SPELL_IDS,
+  FLASH_SPELL_ID,
+  isSupportedSecondarySpell,
+  MAIN_SECONDARY_SPELL_IDS,
+  resolveSpellPair,
+  spellIconHtml,
+  spellName,
+} from "./spells";
+import type {
+  ActiveAccount,
+  AppConfig,
+  ChampionItem,
+  ChampionMasteryItem,
+  ChampSelectUiState,
+  ConnectionStatus,
+  LcuEvent,
+  ModeSettings,
+  ProfileItemConfig,
+  TierChampion,
+} from "./types";
 
 function primarySpellKeyFromUI(): string {
   return (activeSegValue("cfgPrimarySpellKey") || "D").toUpperCase() === "F" ? "F" : "D";
-}
-
-const img = (id: number, n: string) => `<img src="${ICON(id)}" data-n="${escapeHtml(n)}" alt="">`;
-
-/** Escape every dynamic string before it is concatenated into innerHTML. */
-function escapeHtml(str: string): string {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 document.addEventListener(
@@ -750,58 +592,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------- Log Engine ---------- */
-interface LogRow {
-  time: string;
-  kind: "act" | "skip" | "sys" | "err";
-  title: string;
-  reason: string;
-}
-const logHistory: LogRow[] = [];
-let logFilter: "all" | LogRow["kind"] = "all";
-
-function pad2(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-function addLog(kind: "act" | "skip" | "sys" | "err", title: string, reason: string) {
-  const now = new Date();
-  const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
-  logHistory.unshift({ time, kind, title, reason });
-  if (logHistory.length > 80) logHistory.pop();
-  renderLogs();
-  invoke("append_exec_log", { time, kind, title, reason }).catch(() => {});
-}
-function renderLogs() {
-  const toHtml = (r: LogRow) => `
-    <div class="e">
-      <span class="t">${r.time}</span>
-      <span class="tag ${r.kind}">${{ act: "執行", skip: "略過", sys: "系統", err: "錯誤" }[r.kind]}</span>
-      <div>${escapeHtml(r.title)}<span class="reason">${escapeHtml(r.reason)}</span></div>
-    </div>`;
-  // Overview one-line summary: separate time/text/reason slots in index.html.
-  const last = logHistory[0];
-  const setText = (id: string, text: string) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
-  };
-  setText("logShortTime", last ? last.time : "");
-  setText("logShortText", last ? last.title : "尚無紀錄");
-  setText("logShortReason", last ? last.reason : "");
-  const elFull = document.getElementById("logFull");
-  if (elFull) {
-    const rows = logFilter === "all" ? logHistory : logHistory.filter((r) => r.kind === logFilter);
-    elFull.innerHTML = rows.length
-      ? rows.map(toHtml).join("")
-      : `<div class="card-desc">目前沒有符合此篩選條件的紀錄。</div>`;
-  }
-}
-
-document.getElementById("logFilter")?.addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest("button") as HTMLElement | null;
-  if (!b) return;
-  logFilter = (b.dataset.v || "all") as typeof logFilter;
-  renderLogs();
-});
+initLogFilter();
 
 /* ---------- Overview Tiles ---------- */
 // Tiles were removed from the overview per user feedback (duplicated by the
@@ -1970,97 +1761,6 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------- Confirm dialog & safety backup ---------- */
-/** In-app yes/no dialog (native confirm() is not dependable inside WebView2). */
-function confirmDialog(title: string, body: string, okLabel = "確定"): Promise<boolean> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "confirm-overlay";
-    overlay.innerHTML = `
-      <div class="card confirm-box" role="dialog" aria-modal="true">
-        <h3>${escapeHtml(title)}</h3>
-        <div class="card-desc">${escapeHtml(body)}</div>
-        <div class="confirm-actions">
-          <button class="btn" data-answer="no">取消</button>
-          <button class="btn primary" data-answer="yes">${escapeHtml(okLabel)}</button>
-        </div>
-      </div>`;
-    const finish = (answer: boolean) => {
-      overlay.remove();
-      document.removeEventListener("keydown", onKey, true);
-      resolve(answer);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      // Captured at document level so page shortcuts (1–5, arrows) never fire
-      // underneath the dialog; Enter / Space still activate the focused button.
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(false);
-      }
-    };
-    overlay.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
-      if (btn) finish(btn.dataset.answer === "yes");
-      else if (e.target === overlay) finish(false);
-    });
-    document.addEventListener("keydown", onKey, true);
-    document.body.appendChild(overlay);
-    (overlay.querySelector('[data-answer="no"]') as HTMLButtonElement | null)?.focus();
-  });
-}
-
-/**
- * In-app multi-choice dialog on the same overlay as `confirmDialog` (切換存檔
- * needs 取消 / 不儲存 / 儲存). Resolves the chosen value, null on cancel.
- */
-function choiceDialog(
-  title: string,
-  body: string,
-  choices: { label: string; value: string; primary?: boolean }[]
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "confirm-overlay";
-    overlay.innerHTML = `
-      <div class="card confirm-box" role="dialog" aria-modal="true">
-        <h3>${escapeHtml(title)}</h3>
-        <div class="card-desc">${escapeHtml(body)}</div>
-        <div class="confirm-actions">
-          ${choices
-            .map(
-              (c) =>
-                `<button class="btn${c.primary ? " primary" : ""}" data-answer="${escapeHtml(
-                  c.value
-                )}">${escapeHtml(c.label)}</button>`
-            )
-            .join("")}
-        </div>
-      </div>`;
-    const finish = (answer: string | null) => {
-      overlay.remove();
-      document.removeEventListener("keydown", onKey, true);
-      resolve(answer);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      // Captured at document level so page shortcuts (1–5, arrows) never fire
-      // underneath the dialog; Enter / Space still activate the focused button.
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(null);
-      }
-    };
-    overlay.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
-      if (btn) finish(btn.dataset.answer ?? null);
-      else if (e.target === overlay) finish(null);
-    });
-    document.addEventListener("keydown", onKey, true);
-    document.body.appendChild(overlay);
-    (overlay.querySelector("[data-answer]") as HTMLButtonElement | null)?.focus();
-  });
-}
-
 /** Local `YYYYMMDD-HHMMSS`, the stamp format the backend accepts for backup names. */
 function backupStamp(): string {
   const d = new Date();
@@ -2264,60 +1964,6 @@ async function deleteRankingSave() {
   addLog("act", "已刪除排序存檔", `「${save.name}」，改用「${next.name}」`);
 }
 
-/**
- * In-app text prompt on the confirm-dialog overlay (native prompt() is not
- * dependable inside WebView2). Resolves the trimmed value, or null on cancel.
- */
-function promptDialog(title: string, body: string, initial: string, okLabel = "確定"): Promise<string | null> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "confirm-overlay";
-    overlay.innerHTML = `
-      <div class="card confirm-box" role="dialog" aria-modal="true">
-        <h3>${escapeHtml(title)}</h3>
-        <div class="card-desc">${escapeHtml(body)}</div>
-        <input class="input" maxlength="40" value="${escapeHtml(initial)}">
-        <div class="confirm-actions">
-          <button class="btn" data-answer="no">取消</button>
-          <button class="btn primary" data-answer="yes">${escapeHtml(okLabel)}</button>
-        </div>
-      </div>`;
-    const input = overlay.querySelector("input") as HTMLInputElement | null;
-    const finish = (answer: string | null) => {
-      overlay.remove();
-      document.removeEventListener("keydown", onKey, true);
-      resolve(answer);
-    };
-    const commit = () => {
-      const value = (input?.value ?? "").trim();
-      if (value) finish(value);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      // Captured at document level so page shortcuts never fire underneath,
-      // while typing in the input still works.
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(null);
-      } else if (e.key === "Enter" && !e.isComposing) {
-        // isComposing: Enter that confirms an IME candidate (Chinese input) is not a submit.
-        e.preventDefault();
-        commit();
-      }
-    };
-    overlay.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest("[data-answer]") as HTMLElement | null;
-      if (!btn) {
-        if (e.target === overlay) finish(null);
-      } else if (btn.dataset.answer === "yes") commit();
-      else finish(null);
-    });
-    document.addEventListener("keydown", onKey, true);
-    document.body.appendChild(overlay);
-    input?.focus();
-    input?.select();
-  });
-}
 
 document.getElementById("rankSaveSelect")?.addEventListener("change", (e) => {
   void switchRankingSave((e.target as HTMLSelectElement).value);
