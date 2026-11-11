@@ -1,5 +1,6 @@
 pub mod config;
 pub mod engine;
+pub mod fatal;
 pub mod lcu;
 pub mod livegame;
 pub mod single_instance;
@@ -1256,6 +1257,8 @@ fn build_tray(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // A release build has no console and aborts on panic: show why before closing.
+    fatal::install_panic_dialog();
     // One-time: move the pre-rename data folder to its new name before anything
     // reads it, so the single-instance ports come from the final folder. A
     // failed rename keeps the legacy folder in use and is retried next start.
@@ -1595,7 +1598,10 @@ pub fn run() {
             append_exec_log
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|error| {
+            fatal::show_error(&fatal::startup_error_text(&error.to_string()));
+            std::process::exit(1);
+        });
 }
 
 /// Arm the live-game poller when the reminder is enabled for the current queue.
