@@ -538,6 +538,17 @@ fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json
     }
 }
 
+/// Whether the last stretch of the bench lock can be served with one sleep and
+/// no further session poll, saving one LCU round trip at the moment it unlocks.
+///
+/// Only in FINALIZATION, the last champ select phase, so no phase change can
+/// move the lock while we sleep; and only when what is left fits in one poll.
+/// `remaining_secs` is measured after the poll, so sleeping it out never sends
+/// before the lock expires. Callers re-check the bench right before the POST.
+fn can_finish_bench_lock_without_poll(phase: &str, remaining_secs: f64, poll_secs: f64) -> bool {
+    phase == "FINALIZATION" && remaining_secs <= poll_secs
+}
+
 /// Champion IDs currently sitting on the bench in a champ select session.
 fn session_bench_champion_ids(session: &serde_json::Value) -> Vec<i32> {
     session
@@ -558,7 +569,8 @@ fn session_bench_champion_ids(session: &serde_json::Value) -> Vec<i32> {
 /// Re-polls the session at most every 150ms to confirm the champion is still on
 /// the bench, and returns `Err(reason)` as soon as it is gone (a teammate took
 /// it) or champ select ended. A swap may be sent only after this returns
-/// `Ok(())`.
+/// `Ok(())`. The final sleep may skip the last poll, so callers must confirm
+/// the champion is still on the bench before sending.
 async fn wait_for_bench_lock(
     lcu: &SharedLcu,
     tracker: &SharedTracker,
@@ -601,6 +613,9 @@ async fn wait_for_bench_lock(
             return Ok(());
         }
         tokio::time::sleep(POLL_INTERVAL.min(std::time::Duration::from_secs_f64(remaining))).await;
+        if can_finish_bench_lock_without_poll(&phase, remaining, POLL_INTERVAL.as_secs_f64()) {
+            return Ok(());
+        }
     }
 }
 
@@ -2677,9 +2692,10 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, champ_select_phase,
-        is_card_pick_still_pending, now_epoch_ms, parse_ff_time, phase_elapsed_ms,
-        remaining_phase_secs, session_my_champ_id, validate_trade_chat_text,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs,
+        can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending,
+        now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
+        validate_trade_chat_text,
     };
     use crate::config;
     use serde_json::json;
@@ -2857,5 +2873,23 @@ mod tests {
             bench_lock_remaining_secs(Some(10.0), "FINALIZATION", Some(5.0)),
             0.0
         );
+    }
+
+    #[test]
+    fn test_bench_lock_skips_the_last_poll_only_when_it_cannot_send_early() {
+        // FINALIZATION with less than one poll left: sleep it out, no extra poll.
+        let finish = |phase, remaining| can_finish_bench_lock_without_poll(phase, remaining, 0.15);
+        assert!(finish("FINALIZATION", 0.1));
+        assert!(finish("FINALIZATION", 0.15));
+        // More than one poll left: keep polling so a teammate's pick is noticed.
+        assert!(!finish("FINALIZATION", 0.2));
+        // BAN_PICK can still turn into FINALIZATION, whose phase clock adds a
+        // fresh 3s lower bound, so the next poll must recompute the lock.
+        assert!(!finish("BAN_PICK", 0.1));
+        assert!(!finish("", 0.1));
+        // Sleeping the computed remainder always reaches the full 3s lock.
+        let seen = 2.9;
+        let remaining = bench_lock_remaining_secs(Some(seen), "FINALIZATION", Some(10.0));
+        assert!(seen + remaining >= 3.0);
     }
 }
