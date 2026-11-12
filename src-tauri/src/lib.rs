@@ -1,4 +1,5 @@
 pub mod config;
+pub mod dev_restart;
 pub mod engine;
 pub mod fatal;
 pub mod lcu;
@@ -1231,22 +1232,7 @@ fn build_tray(
             let id = event.id().0.clone();
             match id.as_str() {
                 "action_show" => show_main_window(app),
-                // Re-exec the current binary in place (tray stays, window restored).
-                "action_restart" => {
-                    // Start the replacement with the restart flag in its own
-                    // environment (it waits for our instance port instead of
-                    // waking us), then exit. If it cannot start, keep running.
-                    let spawned = std::env::current_exe().and_then(|exe| {
-                        std::process::Command::new(exe)
-                            .args(std::env::args_os().skip(1))
-                            .env(single_instance::RESTART_ENV, "1")
-                            .spawn()
-                    });
-                    match spawned {
-                        Ok(_) => app.exit(0),
-                        Err(err) => eprintln!("restart failed: {err}"),
-                    }
-                }
+                "action_restart" => dev_restart::request_restart(app.clone()),
                 "action_quit" => app.exit(0),
                 toggle if toggle.starts_with("toggle_") => {
                     let app = app.clone();
@@ -1362,6 +1348,7 @@ pub fn run() {
         .manage(shared_account)
         .manage(live_poller)
         .setup(move |app| {
+            dev_restart::cleanup_old_exe_on_startup();
             if let single_instance::Instance::Primary(listener, earlier) = instance {
                 let handle = app.handle().clone();
                 single_instance::serve(listener, earlier, move || show_main_window(&handle));
