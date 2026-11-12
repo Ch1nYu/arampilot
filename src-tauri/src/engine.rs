@@ -605,6 +605,23 @@ impl ChampSelectSessionTracker {
         self.bot_expected_champ = None;
     }
 
+    /// The player clicked a card in the overview: hold it before the request goes
+    /// out, so whichever arrives first (WS event or HTTP reply) reads it as a
+    /// manual pick and no automatic bench swap takes it away. Any automatic
+    /// swap still waiting gives up. Returns the previous hold, to restore if
+    /// the request fails.
+    pub fn begin_manual_card_pick(&mut self, champion_id: i32) -> Option<i32> {
+        let previous = self.manual_bench_hold.replace(champion_id);
+        if self.manual_snipe_target.is_none() {
+            self.bench_retry_target = None;
+        }
+        if self.bot_expected_champ != Some(champion_id) {
+            self.bot_expected_champ = None;
+        }
+        self.bench_suggest_target = None;
+        previous
+    }
+
     /// Remember a spell pair the bot just applied (keeping the previous one).
     pub fn record_bot_spells(&mut self, pair: (i32, i32)) {
         if self.bot_set_spells != Some(pair) {
@@ -712,6 +729,52 @@ mod tests {
         tr.observe_champion_change(1, 3);
         assert_eq!(tr.manual_bench_hold, Some(3));
         assert_eq!(tr.manual_snipe_target, None, "a manual pick ends the overview snipe");
+    }
+
+    #[test]
+    fn test_manual_card_pick_holds_the_champion_against_auto_bench() {
+        // Auto bench swapped us to 126; the player clicks the 90 card to go back.
+        let mut tr = ChampSelectSessionTracker {
+            my_champ_id: 126,
+            ..Default::default()
+        };
+        assert_eq!(tr.begin_manual_card_pick(90), None);
+        tr.observe_champion_change(126, 90);
+        assert_eq!(tr.manual_bench_hold, Some(90));
+        // The swap may pass through an empty selection first: the hold survives.
+        let mut tr = ChampSelectSessionTracker::default();
+        tr.begin_manual_card_pick(90);
+        tr.observe_champion_change(126, 0);
+        tr.observe_champion_change(0, 90);
+        assert_eq!(tr.manual_bench_hold, Some(90));
+        // With the hold, the bench rule keeps the player's pick.
+        let decision = ChampSelectRuleEngine::evaluate_bench(
+            90,
+            &[126],
+            &sample_profile(),
+            &ModeSettings::default(),
+            30,
+            tr.manual_bench_hold,
+        );
+        assert!(
+            matches!(&decision, BenchDecision::Skip { reason } if reason.contains("手動")),
+            "got {:?}",
+            decision
+        );
+    }
+
+    #[test]
+    fn test_manual_card_pick_cancels_a_pending_auto_bench_swap() {
+        let mut tr = ChampSelectSessionTracker {
+            bench_retry_target: Some(126),
+            bot_expected_champ: Some(126),
+            bench_suggest_target: Some(126),
+            ..Default::default()
+        };
+        tr.begin_manual_card_pick(90);
+        assert_eq!(tr.bench_retry_target, None);
+        assert_eq!(tr.bot_expected_champ, None);
+        assert_eq!(tr.bench_suggest_target, None);
     }
 
     fn sample_profile() -> Vec<ChampionProfileItem> {

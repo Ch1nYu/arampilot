@@ -1011,9 +1011,14 @@ fn validate_trade_chat_text(text: &str) -> Result<(), String> {
 }
 
 /// Send the suggested champion card the player clicked on.
+///
+/// A click is a manual pick: it takes the manual hold, so an automatic bench
+/// swap never replaces the champion the player just chose.
 #[tauri::command]
 async fn pick_champion_card(
+    app: tauri::AppHandle,
     state: State<'_, SharedLcu>,
+    tracker: State<'_, SharedTracker>,
     action_id: i64,
     champion_id: i32,
 ) -> Result<(), String> {
@@ -1023,7 +1028,21 @@ async fn pick_champion_card(
     if champion_id <= 0 {
         return Err("無效的英雄 ID".to_string());
     }
-    state.select_champion_card(action_id, champion_id).await
+    let previous_hold = tracker.lock().await.begin_manual_card_pick(champion_id);
+    let result = state.select_champion_card(action_id, champion_id).await;
+    let mut tr = tracker.lock().await;
+    if result.is_err() && tr.manual_bench_hold == Some(champion_id) {
+        tr.manual_bench_hold = previous_hold;
+    }
+    emit_champ_select_state(&app, &tr);
+    drop(tr);
+    if result.is_ok() {
+        emit_lcu_assist(
+            &app,
+            serde_json::json!({ "kind": "clear", "target": "bench" }),
+        );
+    }
+    result
 }
 
 /// Send the suggested champ select chat message the player clicked on.
