@@ -316,10 +316,10 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
   border-radius: var(--radius);
   font-size: 12px;
 }
-.log-line .t { font-family: var(--mono); font-size: 11px; color: var(--dim); }
-.log-line .x { color: var(--text); }
-.log-line .r { color: var(--muted); }
-.log-line a { margin-left: auto; color: var(--accent); font-size: 11px; text-decoration: none; }
+.log-line .t { flex: none; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.log-line .x { flex: none; white-space: nowrap; color: var(--text); }
+.log-line .r { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.log-line a { flex: none; white-space: nowrap; margin-left: auto; color: var(--accent); font-size: 11px; text-decoration: none; }
 
 /* summoner spell pickers (settings page) */
 .spell-picker { position: relative; display: flex; align-items: center; gap: 6px; flex: none; }
@@ -340,7 +340,7 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .tag.skip { color: var(--muted); }
 .tag.err { color: var(--danger); }
 .tag.sys { color: var(--accent); }
-.reason { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; }
+.reason { color: var(--muted); font-size: 11px; display: block; margin-top: 2px; white-space: pre-line; }
 
 /* tiers */
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
