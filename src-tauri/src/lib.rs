@@ -570,8 +570,8 @@ fn session_bench_champion_ids(session: &serde_json::Value) -> Vec<i32> {
 /// Re-polls the session at most every 150ms to confirm the champion is still on
 /// the bench, and returns `Err(reason)` as soon as it is gone (a teammate took
 /// it) or champ select ended. A swap may be sent only after this returns
-/// `Ok(())`. The final sleep may skip the last poll, so callers must confirm
-/// the champion is still on the bench before sending.
+/// `Ok(())`. The final sleep may skip the last poll; callers POST immediately
+/// and verify the bench only if that POST fails.
 async fn wait_for_bench_lock(
     lcu: &SharedLcu,
     tracker: &SharedTracker,
@@ -687,23 +687,6 @@ async fn run_auto_bench_swap(
             }
         }
 
-        // A teammate may have taken it meanwhile: never POST for a champion that
-        // is no longer on the bench.
-        let Ok(session) = lcu.fetch_champ_select_session().await else {
-            abort_auto_bench_swap(&app, &tracker, champion_id, "已離開選角").await;
-            return;
-        };
-        if !session_bench_champion_ids(&session).contains(&champion_id) {
-            abort_auto_bench_swap(
-                &app,
-                &tracker,
-                champion_id,
-                &format!("英雄 (ID: {}) 已離開板凳", champion_id),
-            )
-            .await;
-            return;
-        }
-
         // Mark the coming champion change as the bot's, not a manual pick.
         {
             let mut tr = tracker.lock().await;
@@ -731,6 +714,24 @@ async fn run_auto_bench_swap(
                     "reason": format!("板凳解鎖滿 3 秒後自動換取英雄 (ID: {})", champion_id),
                 }),
             );
+            return;
+        }
+
+        // The swap failed. A teammate may have taken it meanwhile: confirm the
+        // bench before the next attempt instead of paying a GET before every
+        // POST on the fast path.
+        let Ok(session) = lcu.fetch_champ_select_session().await else {
+            abort_auto_bench_swap(&app, &tracker, champion_id, "已離開選角").await;
+            return;
+        };
+        if !session_bench_champion_ids(&session).contains(&champion_id) {
+            abort_auto_bench_swap(
+                &app,
+                &tracker,
+                champion_id,
+                &format!("英雄 (ID: {}) 已離開板凳", champion_id),
+            )
+            .await;
             return;
         }
 
@@ -771,6 +772,33 @@ fn session_my_champ_id(session: &serde_json::Value) -> i32 {
         .and_then(|m| m.get("championId"))
         .and_then(|v| v.as_i64())
         .unwrap_or(0) as i32
+}
+
+/// Finish a manual bench snipe: take the manual hold, clear the retry target,
+/// and record the result.
+async fn finish_manual_bench_snipe(
+    app: &tauri::AppHandle,
+    tracker: &SharedTracker,
+    champion_id: i32,
+    reason: String,
+) {
+    let mut tr = tracker.lock().await;
+    tr.last_bench_swap_time = Some(Instant::now());
+    tr.bench_retry_target = None;
+    tr.manual_snipe_target = None;
+    tr.manual_bench_hold = Some(champion_id);
+    tr.bot_expected_champ = None;
+    tr.last_bench_verdict = Some(reason.clone());
+    emit_champ_select_state(app, &tr);
+    drop(tr);
+    let _ = app.emit(
+        "lcu-log",
+        serde_json::json!({
+            "kind": "act",
+            "title": "已手動搶下板凳英雄",
+            "reason": reason,
+        }),
+    );
 }
 
 /// Manual bench snipe from the overview card.
@@ -875,77 +903,54 @@ async fn swap_bench_champion(
             // 2. The WebSocket event may have already granted us the champion.
             let already_ours = tracker_retry.lock().await.my_champ_id == champion_id;
             if already_ours {
-                let mut tr = tracker_retry.lock().await;
-                tr.manual_bench_hold = Some(champion_id);
-                tr.manual_snipe_target = None;
-                tr.bench_retry_target = None;
-                emit_champ_select_state(&app_retry, &tr);
+                finish_manual_bench_snipe(
+                    &app_retry,
+                    &tracker_retry,
+                    champion_id,
+                    format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
+                )
+                .await;
                 return;
             }
 
-            // 3. Poll the session on the first and every 3rd attempt: verify the
-            //    target is still on the bench (the lock was waited out above).
-            if attempts.is_multiple_of(3) {
-                let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
-                    // No longer in champ select.
-                    break;
-                };
-
-                if session_my_champ_id(&session) == champion_id {
-                    let mut tr = tracker_retry.lock().await;
-                    tr.manual_bench_hold = Some(champion_id);
-                    tr.manual_snipe_target = None;
-                    tr.bench_retry_target = None;
-                    emit_champ_select_state(&app_retry, &tr);
-                    drop(tr);
-                    let _ = app_retry.emit(
-                        "lcu-log",
-                        serde_json::json!({
-                            "kind": "act",
-                            "title": "已手動搶下板凳英雄",
-                            "reason": format!(
-                                "成功換取板凳英雄 (ID: {})，本局啟用手動保護",
-                                champion_id
-                            ),
-                        }),
-                    );
-                    return;
-                }
-
-                if !session_bench_champion_ids(&session).contains(&champion_id) {
-                    // A teammate took it, or it left the bench.
-                    break;
-                }
-            }
-
-            // 4. One request at a time: the previous call is awaited before sleeping.
+            // 3. Send immediately: the lock has expired, so do not spend a
+            //    round trip on a pre-flight GET. If the POST fails, check the
+            //    bench once before deciding whether to retry.
             {
                 let mut tr = tracker_retry.lock().await;
                 tr.bot_expected_champ = Some(champion_id);
             }
             if lcu_retry.swap_bench(champion_id).await.is_ok() {
-                let mut tr = tracker_retry.lock().await;
-                tr.last_bench_swap_time = Some(Instant::now());
-                tr.bench_retry_target = None;
-                tr.manual_snipe_target = None;
-                tr.manual_bench_hold = Some(champion_id);
-                tr.bot_expected_champ = None;
-                tr.last_bench_verdict =
-                    Some(format!("已手動換取英雄 (ID: {})，本局啟用手動保護", champion_id));
-                emit_champ_select_state(&app_retry, &tr);
-                drop(tr);
-                let _ = app_retry.emit(
-                    "lcu-log",
-                    serde_json::json!({
-                        "kind": "act",
-                        "title": "已手動搶下板凳英雄",
-                        "reason": format!(
-                            "板凳解鎖瞬間成功換取英雄 (ID: {})，本局啟用手動保護",
-                            champion_id
-                        ),
-                    }),
-                );
+                finish_manual_bench_snipe(
+                    &app_retry,
+                    &tracker_retry,
+                    champion_id,
+                    format!(
+                        "板凳解鎖瞬間成功換取英雄 (ID: {})，本局啟用手動保護",
+                        champion_id
+                    ),
+                )
+                .await;
                 return;
+            }
+
+            let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
+                // No longer in champ select.
+                break;
+            };
+            if session_my_champ_id(&session) == champion_id {
+                finish_manual_bench_snipe(
+                    &app_retry,
+                    &tracker_retry,
+                    champion_id,
+                    format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
+                )
+                .await;
+                return;
+            }
+            if !session_bench_champion_ids(&session).contains(&champion_id) {
+                // A teammate took it, or it left the bench.
+                break;
             }
 
             // Clear the expectation so a later manual pick is still recognised.
@@ -2033,6 +2038,12 @@ async fn handle_champ_select_event(
     // If the change matches what the bot was trying to acquire, it is a bot swap, not a manual pick.
     tr.observe_champion_change(old_champ_id, my_champ_id);
 
+    // Start the bench-lock clock before any of the HTTP calls below (queue
+    // lookup, spell PATCH, subset list) can delay this event. Otherwise a
+    // champion that just landed on the bench would be treated as if it landed
+    // later, and the app would wait longer than the official 3s lock.
+    update_bench_first_seen(&mut tr, data);
+
     // Resolve the queue id so ARAM (450) and Mayhem (2400) use their own profile/settings,
     // and non-ARAM modes (Practice Tool, Summoner's Rift, TFT, Arena) are strictly excluded!
     // Note: custom lobbies report `queueId: -1` in `/lol-champ-select/v1/session`, so ignore
@@ -2318,11 +2329,6 @@ async fn handle_champ_select_event(
     // 1. Suggest a bench swap FIRST (prioritized over teammate trades so the
     //    player sees their own favorite before an incoming trade).
     //
-    // The LCU bench swap endpoint does not enforce the 3s lock the official
-    // client applies, so the app times it itself: record when each champion
-    // first appeared on the bench before any suggestion or automation runs.
-    update_bench_first_seen(&mut tr, data);
-
     let bench_enabled = data
         .get("benchEnabled")
         .and_then(|v| v.as_bool())
