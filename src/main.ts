@@ -146,7 +146,7 @@ document.addEventListener("click", (e) => {
 });
 
 /* ---------- Generic Controls ---------- */
-initFormControls(debouncedSaveConfig);
+  initFormControls(debouncedSaveConfig, saveConfigImmediate);
 
 /* ---------- Shared Mode Settings (ARAM + Mayhem) ---------- */
 let ffTime = "08:00";

@@ -14,8 +14,15 @@ export function formatRangeLabel(input: HTMLInputElement): string {
   return (input.dataset.prefix || "") + shown + (input.dataset.suffix || "");
 }
 
-/** Wires the segmented buttons, switches, sliders and gates; called from main.ts at the original startup point. */
-export function initFormControls(onChange: () => void) {
+/**
+ * Wires the segmented buttons, switches, sliders and gates; called from
+ * main.ts at the original startup point.
+ *
+ * `onChange` is debounced by the caller while a slider is being dragged;
+ * `onCommit` runs when the slider is released so the final value is written
+ * immediately instead of waiting out the debounce.
+ */
+export function initFormControls(onChange: () => void, onCommit: () => void = onChange) {
   document.querySelectorAll("[data-seg]").forEach((seg) =>
     seg.addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest("button");
@@ -59,6 +66,10 @@ export function initFormControls(onChange: () => void) {
     input.addEventListener("input", () => {
       upd();
       onChange();
+    });
+    input.addEventListener("change", () => {
+      upd();
+      onCommit();
     });
     if (numBuddy) {
       numBuddy.addEventListener("input", () => {
