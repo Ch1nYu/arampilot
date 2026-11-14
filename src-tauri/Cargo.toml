@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.2.5"
+version = "0.2.6"
 description = "League of Legends ARAM / Mayhem champ-select assistant (local LCU API only)"
 authors = ["you"]
 edition = "2024"
