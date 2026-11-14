@@ -2,6 +2,7 @@ pub mod config;
 pub mod dev_restart;
 pub mod engine;
 pub mod fatal;
+pub mod icon_cache;
 pub mod lcu;
 pub mod livegame;
 pub mod single_instance;
@@ -1352,6 +1353,34 @@ pub fn run() {
         .manage(shared_config)
         .manage(shared_account)
         .manage(live_poller)
+        .register_asynchronous_uri_scheme_protocol("icon", |ctx, request, responder| {
+            // The webview reaches custom schemes at `http://icon.localhost/<path>`.
+            let Some(key) = icon_cache::parse_icon_path(request.uri().path()) else {
+                responder.respond(
+                    tauri::http::Response::builder()
+                        .status(404)
+                        .body(Vec::new())
+                        .expect("static 404 response cannot fail to build"),
+                );
+                return;
+            };
+            // Only the inner Arc is cloned: the protocol handler must not hold
+            // a `State` across an await point.
+            let lcu: SharedLcu = ctx.app_handle().state::<SharedLcu>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let response = match icon_cache::load(&lcu, &icon_cache::cache_dir(), &key).await {
+                    Some(bytes) => tauri::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "image/png")
+                        .header("Cache-Control", "no-store")
+                        .body(bytes),
+                    None => tauri::http::Response::builder().status(404).body(Vec::new()),
+                };
+                if let Ok(response) = response {
+                    responder.respond(response);
+                }
+            });
+        })
         .setup(move |app| {
             dev_restart::cleanup_old_exe_on_startup();
             if let single_instance::Instance::Primary(listener, earlier) = instance {
@@ -1437,6 +1466,22 @@ pub fn run() {
                     let _ = app_h1.emit("lcu-status", &status);
 
                     if status.connected {
+                        // Refresh the icon cache when the client's build version
+                        // changed. Runs detached so it never delays the account
+                        // sync and tray updates that follow.
+                        let lcu_for_icons = Arc::clone(&lcu_for_status);
+                        let app_for_icons = app_h1.clone();
+                        spawn(async move {
+                            if let Some(version) = icon_cache::refresh_if_version_changed(
+                                &lcu_for_icons,
+                                &icon_cache::cache_dir(),
+                            )
+                            .await
+                            {
+                                let _ = app_for_icons.emit("icons-updated", version);
+                            }
+                        });
+
                         // Show which account is logged in (the config is shared).
                         if !sync_active_account(&app_h1, &lcu_for_status, &account_for_status).await
                         {

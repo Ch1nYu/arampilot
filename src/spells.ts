@@ -1,9 +1,6 @@
-import { escapeHtml } from "./html";
+import { escapeHtml, spellIconUrl } from "./html";
 
 /* ---------- Summoner Spells ---------- */
-export const SPELL_ICON_BASE =
-  "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/";
-
 export interface SummonerSpellMeta {
   id: number;
   name: string;
@@ -38,7 +35,7 @@ export function spellName(id: number): string {
 
 export function spellIconHtml(id: number): string {
   const meta = SUMMONER_SPELLS[id];
-  return `<img class="spell-ic" src="${SPELL_ICON_BASE}${meta?.icon || "summoner_flash.png"}" data-n="${escapeHtml(
+  return `<img class="spell-ic" src="${spellIconUrl(meta?.icon || "summoner_flash.png")}" data-n="${escapeHtml(
     meta?.name || "技能"
   )}" alt="">`;
 }

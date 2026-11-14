@@ -21,7 +21,7 @@
 
 - 選角階段只透過客戶端在本機開放的 LCU API（`127.0.0.1`）讀取狀態、送出接受／選角／換角請求。遊戲中只讀本機 Live Client Data（`127.0.0.1:2999`）的遊戲時間，用來提醒投降。
 - 不注入、不讀遊戲記憶體、不模擬鍵盤或滑鼠。`/ff` 仍然要你自己打。
-- 對外連線只有英雄頭像（CommunityDragon）與檢查更新（GitHub Releases），不會上傳任何資料。介面字型已打包在 App 內。
+- 對外連線只有檢查更新（GitHub Releases），以及本機還沒有頭像、LoL 用戶端又沒開時向 CommunityDragon 下載頭像，不會上傳任何資料。頭像平常從你電腦上的 LoL 用戶端讀取並存在本機，遊戲改版後自動更新。介面字型已打包在 App 內。
 - 第三方工具都有風險。Riot 沒有背書本工具，使用風險自負。
 
 ## 下載與安裝
@@ -139,7 +139,7 @@ pnpm tauri build                                # 產生安裝檔
 
 ARAMPilot isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
 
-英雄頭像來自 [CommunityDragon](https://www.communitydragon.org/)。
+英雄頭像來自本機的 LoL 用戶端，備援來源是 [CommunityDragon](https://www.communitydragon.org/)。
 
 ## 授權
 

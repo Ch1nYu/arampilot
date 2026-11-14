@@ -773,6 +773,21 @@ impl LcuManager {
         Ok(list)
     }
 
+    /// Fetch a raw asset (e.g. icon PNG bytes) from the local client (`GET path`).
+    pub async fn fetch_asset(&self, path: &str) -> Result<Vec<u8>, String> {
+        let res = self.send_ok(reqwest::Method::GET, path, None).await?;
+        res.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+    }
+
+    /// Fetch the client's current build version (`GET /system/v1/builds`).
+    pub async fn fetch_build_version(&self) -> Option<String> {
+        let raw = self.get_json_opt("/system/v1/builds").await?;
+        raw.get("version")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+
     /// Accept ready check
     pub async fn accept_ready_check(&self) -> Result<(), String> {
         let path = "/lol-matchmaking/v1/ready-check/accept";

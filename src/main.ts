@@ -29,7 +29,7 @@ import {
   syncBattlePool,
   syncFlashPool,
 } from "./battle";
-import { escapeHtml, img } from "./html";
+import { escapeHtml, img, reloadIcons } from "./html";
 import { addLog, initLogFilter } from "./logs";
 import {
   activeChkValues,
@@ -690,6 +690,12 @@ async function initLcuBackend() {
 
   await listen("lcu-ready-accepted", () => {
     notifyAccept();
+  });
+
+  // The backend re-downloaded the icons after a game patch: show the new ones.
+  await listen("icons-updated", () => {
+    reloadIcons(document);
+    renderTiers();
   });
 
   await listen<AppConfig>("config-updated", (event) => applyConfigToUI(event.payload));
