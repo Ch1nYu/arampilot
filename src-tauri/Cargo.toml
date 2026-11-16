@@ -2,7 +2,7 @@
 name = "tauri-app"
 version = "0.2.7"
 description = "League of Legends ARAM / Mayhem champ-select assistant (local LCU API only)"
-authors = ["you"]
+authors = ["Ch1nYu"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
