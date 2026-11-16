@@ -4,10 +4,10 @@ use futures_util::{SinkExt, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::{RwLock, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -642,17 +642,21 @@ impl LcuManager {
         // Method 1: Process inspection (fastest, works anywhere)
         // The exe path stays readable for an elevated client even when its
         // command line is not, and it points at the lockfile of any install path.
-        let refresh = ProcessRefreshKind::nothing()
-            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
-            .with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
-        let mut sys =
-            System::new_with_specifics(RefreshKind::nothing().with_processes(refresh));
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh);
+        //
+        // This runs every 2s for the whole life of the app, so it lists process
+        // names only (one system call) and reads the command line and exe path
+        // of the League processes alone. Reading them for every process opens
+        // each one and cost ~27 ms of CPU per scan on a 350-process desktop.
+        static SCAN: LazyLock<Mutex<System>> = LazyLock::new(|| Mutex::new(System::new()));
+        static PORT_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"--app-port=(\d+)").unwrap());
+        static TOKEN_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"--remoting-auth-token=([\w-]+)").unwrap());
 
-        let port_re = Regex::new(r"--app-port=(\d+)").unwrap();
-        let token_re = Regex::new(r"--remoting-auth-token=([\w-]+)").unwrap();
+        let mut sys = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+        let league_pids = scan_processes_named(&mut sys, is_league_client_process);
 
-        for process in sys.processes().values() {
+        for process in league_pids.iter().filter_map(|pid| sys.process(*pid)) {
             let name = process.name().to_string_lossy();
             if name.eq_ignore_ascii_case("LeagueClientUx.exe") {
                 let cmd: Vec<String> = process
@@ -662,8 +666,8 @@ impl LcuManager {
                     .collect();
                 let cmd_str = cmd.join(" ");
 
-                let port_match = port_re.captures(&cmd_str);
-                let token_match = token_re.captures(&cmd_str);
+                let port_match = PORT_RE.captures(&cmd_str);
+                let token_match = TOKEN_RE.captures(&cmd_str);
 
                 if let (Some(pm), Some(tm)) = (port_match, token_match)
                     && let Ok(port) = pm.get(1).unwrap().as_str().parse::<u16>()
@@ -682,14 +686,9 @@ impl LcuManager {
 
         // Method 2: the lockfile next to a running client, then common install paths.
         // A lockfile survives a crash, so its PID must be proven alive first.
-        let mut candidates: Vec<std::path::PathBuf> = sys
-            .processes()
-            .values()
-            .filter(|p| {
-                let name = p.name().to_string_lossy();
-                name.eq_ignore_ascii_case("LeagueClient.exe")
-                    || name.eq_ignore_ascii_case("LeagueClientUx.exe")
-            })
+        let mut candidates: Vec<std::path::PathBuf> = league_pids
+            .iter()
+            .filter_map(|pid| sys.process(*pid))
             .filter_map(|p| p.exe().and_then(|exe| exe.parent()).map(|dir| dir.join("lockfile")))
             .collect();
         for path in [
@@ -1203,9 +1202,70 @@ impl LcuManager {
     }
 }
 
+fn is_league_client_process(name: &str) -> bool {
+    name.eq_ignore_ascii_case("LeagueClient.exe") || name.eq_ignore_ascii_case("LeagueClientUx.exe")
+}
+
+/// Refresh the process list by name only, then load the command line and exe
+/// path of the processes whose name matches. Returns the matching PIDs.
+fn scan_processes_named(sys: &mut System, matches: impl Fn(&str) -> bool) -> Vec<sysinfo::Pid> {
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let pids: Vec<sysinfo::Pid> = sys
+        .processes()
+        .iter()
+        .filter(|(_, p)| matches(&p.name().to_string_lossy()))
+        .map(|(pid, _)| *pid)
+        .collect();
+    if !pids.is_empty() {
+        // Always re-read: a reused PID must not keep the previous command line.
+        let detail = ProcessRefreshKind::nothing()
+            .with_cmd(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always);
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), false, detail);
+    }
+    pids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_scan_loads_cmd_and_exe_only_for_matching_processes() {
+        let me = sysinfo::get_current_pid().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let my_name = exe.file_name().unwrap().to_string_lossy().to_string();
+        let mut sys = System::new();
+
+        // Scanning twice covers the reused `System` the watcher keeps.
+        for _ in 0..2 {
+            let pids = scan_processes_named(&mut sys, |name| name.eq_ignore_ascii_case(&my_name));
+            assert!(pids.contains(&me), "the test process is found by name");
+            let process = sys.process(me).unwrap();
+            assert!(!process.cmd().is_empty(), "command line is loaded");
+            assert!(process.exe().is_some(), "exe path is loaded");
+        }
+        let others_with_cmd = sys
+            .processes()
+            .iter()
+            .filter(|(pid, p)| **pid != me && !p.name().to_string_lossy().eq_ignore_ascii_case(&my_name))
+            .filter(|(_, p)| !p.cmd().is_empty())
+            .count();
+        assert_eq!(others_with_cmd, 0, "other processes are not opened for details");
+    }
+
+    #[test]
+    fn test_scan_returns_nothing_when_no_process_matches() {
+        let mut sys = System::new();
+        assert!(scan_processes_named(&mut sys, |_| false).is_empty());
+    }
+
+    #[test]
+    fn test_league_client_process_names() {
+        assert!(is_league_client_process("LeagueClientUx.exe"));
+        assert!(is_league_client_process("leagueclient.exe"));
+        assert!(!is_league_client_process("League of Legends.exe"));
+    }
 
     #[test]
     fn test_trade_still_pending_ignores_idle_slots() {
