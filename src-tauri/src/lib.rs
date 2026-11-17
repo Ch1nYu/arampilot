@@ -839,6 +839,18 @@ fn session_my_champ_id(session: &serde_json::Value) -> i32 {
         .unwrap_or(0) as i32
 }
 
+/// What a session says about a bench swap for `champion_id`: `Some(true)` we
+/// hold it, `Some(false)` it left the bench to someone else, `None` not settled yet.
+fn bench_swap_landed(session: &serde_json::Value, champion_id: i32) -> Option<bool> {
+    if session_my_champ_id(session) == champion_id {
+        Some(true)
+    } else if !session_bench_champion_ids(session).contains(&champion_id) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Finish a manual bench snipe: take the manual hold, clear the retry target,
 /// and record the result.
 async fn finish_manual_bench_snipe(
@@ -952,14 +964,32 @@ async fn swap_bench_champion(
         // Never exceed today's attempt rate: 24 attempts at the 120ms default.
         let max_attempts: u32 = 3200_u64.div_ceil(snipe_ms).max(1) as u32;
         let mut attempts: u32 = 0;
+        let mut stop_reason = format!(
+            "英雄 (ID: {}) 鎖定未解開或換角一直沒生效，已安全停止重試",
+            champion_id
+        );
 
         while started_at.elapsed() < max_elapsed && attempts < max_attempts {
             // 1. Cheap in-memory guards: a newer snipe or a takeover ends this loop.
             {
                 let tr = tracker_retry.lock().await;
-                if tr.manual_snipe_generation != my_gen
-                    || tr.manual_snipe_target != Some(champion_id)
-                {
+                if tr.manual_snipe_generation != my_gen {
+                    return;
+                }
+                if tr.manual_snipe_target != Some(champion_id) {
+                    // The session already showed the champion landing (that clears
+                    // the target): record the success instead of ending silently.
+                    let landed = tr.my_champ_id == champion_id;
+                    drop(tr);
+                    if landed {
+                        finish_manual_bench_snipe(
+                            &app_retry,
+                            &tracker_retry,
+                            champion_id,
+                            format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
+                        )
+                        .await;
+                    }
                     return;
                 }
             }
@@ -978,42 +1008,40 @@ async fn swap_bench_champion(
             }
 
             // 3. Send immediately: the lock has expired, so do not spend a
-            //    round trip on a pre-flight GET. If the POST fails, check the
-            //    bench once before deciding whether to retry.
+            //    round trip on a pre-flight GET. LCU accepting the request does
+            //    not mean we got the champion (a faster teammate may), so the
+            //    session afterwards decides either way.
             {
                 let mut tr = tracker_retry.lock().await;
                 tr.bot_expected_champ = Some(champion_id);
             }
-            if lcu_retry.swap_bench(champion_id).await.is_ok() {
+            let accepted = lcu_retry.swap_bench(champion_id).await.is_ok();
+
+            let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
+                stop_reason = "已離開選角，已停止重試".to_string();
+                break;
+            };
+            let landed = bench_swap_landed(&session, champion_id);
+            if landed == Some(true) {
                 finish_manual_bench_snipe(
                     &app_retry,
                     &tracker_retry,
                     champion_id,
                     format!(
-                        "板凳解鎖瞬間成功換取英雄 (ID: {})，本局啟用手動保護",
-                        champion_id
+                        "成功換取板凳英雄 (ID: {})，解鎖後 {} ms 確認到手，本局啟用手動保護",
+                        champion_id,
+                        started_at.elapsed().as_millis()
                     ),
                 )
                 .await;
                 return;
             }
-
-            let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
-                // No longer in champ select.
-                break;
-            };
-            if session_my_champ_id(&session) == champion_id {
-                finish_manual_bench_snipe(
-                    &app_retry,
-                    &tracker_retry,
+            if landed == Some(false) {
+                stop_reason = format!(
+                    "英雄 (ID: {}) 被隊友先換走{}，已停止重試",
                     champion_id,
-                    format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
-                )
-                .await;
-                return;
-            }
-            if !session_bench_champion_ids(&session).contains(&champion_id) {
-                // A teammate took it, or it left the bench.
+                    if accepted { "（LCU 收下了請求，但沒換到）" } else { "" }
+                );
                 break;
             }
 
@@ -1048,10 +1076,7 @@ async fn swap_bench_champion(
             serde_json::json!({
                 "kind": "err",
                 "title": "手動搶角已停止",
-                "reason": format!(
-                    "英雄 (ID: {}) 鎖定未解開或已被隊友選走，已安全停止重試",
-                    champion_id
-                ),
+                "reason": stop_reason,
             }),
         );
     });
@@ -2844,7 +2869,7 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, bench_lock_remaining_secs,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_swap_landed,
         can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
         validate_trade_chat_text,
@@ -3006,6 +3031,23 @@ mod tests {
         });
         assert_eq!(session_my_champ_id(&session), 145);
         assert_eq!(session_my_champ_id(&json!({})), 0);
+    }
+
+    #[test]
+    fn test_bench_swap_landed_reads_the_session_not_the_http_reply() {
+        let session = |mine: i32, bench: &[i32]| {
+            json!({
+                "localPlayerCellId": 3,
+                "myTeam": [{ "cellId": 3, "championId": mine }],
+                "benchChampions": bench.iter().map(|c| json!({ "championId": c })).collect::<Vec<_>>()
+            })
+        };
+        // We hold Corki (42).
+        assert_eq!(bench_swap_landed(&session(42, &[800]), 42), Some(true));
+        // A teammate took Corki: it left the bench, we still hold Mel (800).
+        assert_eq!(bench_swap_landed(&session(800, &[112]), 42), Some(false));
+        // Not settled yet: Corki still on the bench.
+        assert_eq!(bench_swap_landed(&session(800, &[42, 112]), 42), None);
     }
 
     #[test]
