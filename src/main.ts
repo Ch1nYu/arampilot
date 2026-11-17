@@ -465,7 +465,6 @@ const SAVE_ON_CHANGE_IDS = [
   "cfgCloseToTray",
   "cfgAutoStart",
   "cfgRememberSpells",
-  "cfgAutoExitGame",
   "cfgAutoPlayAgain",
   "cfgAutoStartQueue",
 ];
@@ -573,7 +572,6 @@ function collectConfig(): AppConfig {
     accept_notify: activeSegValue("cfgAcceptNotify") || "sound",
     auto_play_again: checkboxValue("cfgAutoPlayAgain", false),
     auto_start_queue: checkboxValue("cfgAutoStartQueue", false),
-    auto_exit_game: checkboxValue("cfgAutoExitGame", false),
     aram_settings: state.currentSettings,
     mayhem_settings: { ...state.currentSettings },
     auto_chat_on_swap: checkboxValue("cfgAutoChat", true),
@@ -777,7 +775,6 @@ function applyConfigToUI(cfg: AppConfig) {
   setSegValue("cfgAcceptNotify", cfg.accept_notify || "sound");
   setCheckbox("cfgAutoPlayAgain", cfg.auto_play_again ?? false);
   setCheckbox("cfgAutoStartQueue", cfg.auto_start_queue ?? false);
-  setCheckbox("cfgAutoExitGame", cfg.auto_exit_game ?? false);
 
   state.currentSettings = normalizeModeSettings(cfg.aram_settings ?? cfg.mayhem_settings);
   writeModeSettingsToUI(state.currentSettings);

@@ -185,8 +185,6 @@ pub struct AppConfig {
     pub auto_play_again: bool,
     /// Opt-in: as party leader, start matchmaking once every party member is back in the lobby.
     pub auto_start_queue: bool,
-    /// Opt-in: leave the game client when the game ends (no automation uses it yet).
-    pub auto_exit_game: bool,
 
     // Mode-specific automation settings
     pub aram_settings: ModeSettings,
@@ -262,7 +260,6 @@ impl Default for AppConfig {
             accept_notify: "sound".to_string(),
             auto_play_again: false,
             auto_start_queue: false,
-            auto_exit_game: false,
             aram_settings: ModeSettings::default(),
             mayhem_settings: ModeSettings::default(),
             auto_chat_on_swap: true,
@@ -1260,12 +1257,10 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(!cfg.auto_play_again);
         assert!(!cfg.auto_start_queue);
-        assert!(!cfg.auto_exit_game);
         // A config written before these switches existed must load with them off.
         let legacy: AppConfig = serde_json::from_str(r#"{"auto_accept": true}"#).unwrap();
         assert!(!legacy.auto_play_again);
         assert!(!legacy.auto_start_queue);
-        assert!(!legacy.auto_exit_game);
         assert!(legacy.auto_accept);
     }
 
