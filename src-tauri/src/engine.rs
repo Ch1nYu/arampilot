@@ -544,6 +544,25 @@ pub struct ChampSelectSessionTracker {
     pub prev_bot_set_spells: Option<(i32, i32)>,
     /// How long champ-select events took to handle this session (latency measurements).
     pub event_timing: EventTiming,
+    /// An auto bench swap LCU accepted but the session has not shown yet.
+    pub pending_bench_swap: Option<PendingBenchSwap>,
+}
+
+/// A bench swap request LCU accepted; whether it landed is read from later sessions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingBenchSwap {
+    pub champ_id: i32,
+    pub unlocked_at: std::time::Instant,
+    pub attempt: u32,
+}
+
+/// What the live session says about a pending bench swap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BenchSwapOutcome {
+    /// We now hold the champion.
+    Landed(PendingBenchSwap),
+    /// The champion left the bench and we do not hold it: a teammate got it first.
+    Lost(PendingBenchSwap),
 }
 
 /// Per-session timing of champ-select event handling, logged once when the session ends.
@@ -614,6 +633,30 @@ impl ChampSelectSessionTracker {
         self.manual_spell_override = false;
         self.prev_bot_set_spells = None;
         self.event_timing = EventTiming::default();
+        self.pending_bench_swap = None;
+    }
+
+    /// Settle a pending bench swap against a session snapshot that lists the bench.
+    /// Returns `None` while the session does not show the result yet.
+    pub fn resolve_pending_bench_swap(
+        &mut self,
+        my_champ_id: i32,
+        bench_champ_ids: &[i32],
+    ) -> Option<BenchSwapOutcome> {
+        let pending = self.pending_bench_swap?;
+        let outcome = if my_champ_id == pending.champ_id {
+            BenchSwapOutcome::Landed(pending)
+        } else if !bench_champ_ids.contains(&pending.champ_id) {
+            // No champion change of ours will ever match this expectation now.
+            if self.bot_expected_champ == Some(pending.champ_id) {
+                self.bot_expected_champ = None;
+            }
+            BenchSwapOutcome::Lost(pending)
+        } else {
+            return None;
+        };
+        self.pending_bench_swap = None;
+        Some(outcome)
     }
 
     /// Classify our champion changing from `old_champ_id` to `new_champ_id`.
@@ -702,6 +745,39 @@ impl ChampSelectSessionTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pending_bench_swap_resolves_from_the_live_session() {
+        let pending = PendingBenchSwap {
+            champ_id: 42,
+            unlocked_at: std::time::Instant::now(),
+            attempt: 0,
+        };
+        let mut tr = ChampSelectSessionTracker {
+            pending_bench_swap: Some(pending),
+            bot_expected_champ: Some(42),
+            ..Default::default()
+        };
+        // Session not updated yet: Corki still on the bench, we hold Mel.
+        assert_eq!(tr.resolve_pending_bench_swap(800, &[42, 112]), None);
+        assert_eq!(tr.pending_bench_swap, Some(pending));
+
+        // A teammate took Corki: it left the bench and we still hold Mel.
+        assert_eq!(
+            tr.resolve_pending_bench_swap(800, &[112, 7]),
+            Some(BenchSwapOutcome::Lost(pending))
+        );
+        assert_eq!(tr.pending_bench_swap, None);
+        assert_eq!(tr.bot_expected_champ, None);
+
+        // The swap landed.
+        tr.pending_bench_swap = Some(pending);
+        assert_eq!(
+            tr.resolve_pending_bench_swap(42, &[800, 112]),
+            Some(BenchSwapOutcome::Landed(pending))
+        );
+        assert_eq!(tr.resolve_pending_bench_swap(42, &[800]), None);
+    }
 
     #[test]
     fn test_event_timing_summary() {

@@ -535,6 +535,46 @@ fn bench_lock_remaining_secs(
 /// suggestions or automation are enabled, so the lock clock is already running
 /// by the time a swap is considered. A snapshot without `benchChampions` keeps
 /// the existing clocks instead of clearing them.
+/// Log what really happened to an auto bench swap once the session shows it.
+fn log_bench_swap_outcome(
+    app_handle: &tauri::AppHandle,
+    profile: &[config::ChampionProfileItem],
+    outcome: engine::BenchSwapOutcome,
+) {
+    let name_of = |id: i32| {
+        profile
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| format!("ID:{}", id))
+    };
+    let (kind, title, reason) = match outcome {
+        engine::BenchSwapOutcome::Landed(p) => (
+            "act",
+            "已自動換成板凳英雄",
+            format!(
+                "已換到【{}】，板凳解鎖後 {} ms 確認到手（第 {} 次嘗試）",
+                name_of(p.champ_id),
+                p.unlocked_at.elapsed().as_millis(),
+                p.attempt + 1
+            ),
+        ),
+        engine::BenchSwapOutcome::Lost(p) => (
+            "skip",
+            "沒換到板凳英雄",
+            format!(
+                "【{}】被隊友先換走，改找下一個順位（板凳解鎖後 {} ms 確認）",
+                name_of(p.champ_id),
+                p.unlocked_at.elapsed().as_millis()
+            ),
+        ),
+    };
+    let _ = app_handle.emit(
+        "lcu-log",
+        serde_json::json!({ "kind": kind, "title": title, "reason": reason }),
+    );
+}
+
 fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json::Value) {
     let Some(bench) = data.get("benchChampions").and_then(|v| v.as_array()) else {
         return;
@@ -715,25 +755,19 @@ async fn run_auto_bench_swap(
             tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
             // as a bot swap and takes no manual hold.
-            tr.last_bench_verdict = Some(format!("已自動換取板凳英雄 (ID: {})", champion_id));
+            // LCU accepting the request does not mean we got the champion (a
+            // teammate may be faster): the next sessions settle and log it.
+            tr.pending_bench_swap = Some(engine::PendingBenchSwap {
+                champ_id: champion_id,
+                unlocked_at,
+                attempt,
+            });
+            tr.last_bench_verdict = Some(format!("已送出換角請求 (ID: {})，等待確認", champion_id));
             emit_champ_select_state(&app, &tr);
             drop(tr);
             emit_lcu_assist(
                 &app,
                 serde_json::json!({ "kind": "clear", "target": "bench" }),
-            );
-            let _ = app.emit(
-                "lcu-log",
-                serde_json::json!({
-                    "kind": "act",
-                    "title": "已自動換成板凳英雄",
-                    "reason": format!(
-                        "板凳解鎖滿 3 秒後自動換取英雄 (ID: {})，解鎖後 {} ms 換角完成（第 {} 次嘗試）",
-                        champion_id,
-                        unlocked_at.elapsed().as_millis(),
-                        attempt + 1
-                    ),
-                }),
             );
             return;
         }
@@ -2145,6 +2179,12 @@ async fn handle_champ_select_event(
     // champion that just landed on the bench would be treated as if it landed
     // later, and the app would wait longer than the official 3s lock.
     update_bench_first_seen(&mut tr, data);
+    if data.get("benchChampions").is_some() {
+        let bench_ids = session_bench_champion_ids(data);
+        if let Some(outcome) = tr.resolve_pending_bench_swap(my_champ_id, &bench_ids) {
+            log_bench_swap_outcome(app_handle, &config.aram_profile, outcome);
+        }
+    }
 
     // Resolve the queue id so ARAM (450) and Mayhem (2400) use their own profile/settings,
     // and non-ARAM modes (Practice Tool, Summoner's Rift, TFT, Arena) are strictly excluded!
