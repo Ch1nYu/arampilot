@@ -84,6 +84,7 @@ export interface AppConfig {
   accept_delay_sec: number;
   accept_modes: string[];
   accept_notify: string; // "mute", "sound", "notification"
+  accept_minimize_client?: boolean;
   auto_play_again?: boolean;
   auto_start_queue?: boolean;
   aram_settings: ModeSettings;

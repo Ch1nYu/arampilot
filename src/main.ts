@@ -465,6 +465,7 @@ const SAVE_ON_CHANGE_IDS = [
   "cfgCloseToTray",
   "cfgAutoStart",
   "cfgRememberSpells",
+  "cfgAcceptMinimize",
   "cfgAutoPlayAgain",
   "cfgAutoStartQueue",
 ];
@@ -570,6 +571,7 @@ function collectConfig(): AppConfig {
     accept_delay_sec: numberValue("cfgAcceptDelay", 2),
     accept_modes: [...acceptModes],
     accept_notify: activeSegValue("cfgAcceptNotify") || "sound",
+    accept_minimize_client: checkboxValue("cfgAcceptMinimize", false),
     auto_play_again: checkboxValue("cfgAutoPlayAgain", false),
     auto_start_queue: checkboxValue("cfgAutoStartQueue", false),
     aram_settings: state.currentSettings,
@@ -773,6 +775,7 @@ function applyConfigToUI(cfg: AppConfig) {
   acceptModes = normalizeAcceptModes(cfg.accept_modes);
   applyAcceptModesToUI();
   setSegValue("cfgAcceptNotify", cfg.accept_notify || "sound");
+  setCheckbox("cfgAcceptMinimize", cfg.accept_minimize_client ?? false);
   setCheckbox("cfgAutoPlayAgain", cfg.auto_play_again ?? false);
   setCheckbox("cfgAutoStartQueue", cfg.auto_start_queue ?? false);
 

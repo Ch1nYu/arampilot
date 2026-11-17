@@ -2306,6 +2306,14 @@ async fn handle_ready_check_event(
                     }),
                 );
                 let _ = app_h.emit("lcu-ready-accepted", ());
+                if cfg.accept_minimize_client
+                    && let Err(e) = lcu_clone.minimize_client().await
+                {
+                    let _ = app_h.emit(
+                        "lcu-log",
+                        serde_json::json!({ "kind": "err", "title": "縮小用戶端失敗", "reason": e }),
+                    );
+                }
             }
             Err(e) => {
                 // If ReadyCheck already transitioned to ChampSelect while our POST was in flight,

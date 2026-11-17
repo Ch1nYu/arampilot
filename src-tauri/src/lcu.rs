@@ -793,6 +793,11 @@ impl LcuManager {
         self.send_unit(reqwest::Method::POST, path, None).await
     }
 
+    /// Minimize the League client window (the client pops itself up on a ready check).
+    pub async fn minimize_client(&self) -> Result<(), String> {
+        self.send_unit(reqwest::Method::POST, "/riotclient/ux-minimize", None).await
+    }
+
     /// Swap with champion on ARAM bench
     pub async fn swap_bench(&self, champion_id: i32) -> Result<(), String> {
         let path = format!("/lol-champ-select/v1/session/bench/swap/{}", champion_id);
