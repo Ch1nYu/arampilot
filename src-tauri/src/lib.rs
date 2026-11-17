@@ -1526,6 +1526,7 @@ pub fn run() {
                                         &lcu_for_status,
                                         &config_for_status,
                                         &rc_tracker_for_status,
+                                        Some(queue_id),
                                     )
                                     .await;
                                 }
@@ -1533,7 +1534,7 @@ pub fn run() {
                             Some("InProgress") => {
                                 // A client that connects mid-game must still arm the reminder.
                                 let cfg = config_for_status.read().await.clone();
-                                start_ff_poller(&lcu_for_status, &live_poller_for_status, &cfg)
+                                start_ff_poller(&lcu_for_status, &live_poller_for_status, &cfg, Some(queue_id))
                                     .await;
                             }
                             Some("ChampSelect") => {
@@ -1614,6 +1615,7 @@ pub fn run() {
                             &lcu_for_worker,
                             &config_for_worker,
                             &rc_tracker,
+                            None,
                         )
                         .await;
                     } else if event.uri == "/lol-champ-select/v1/session" {
@@ -1641,6 +1643,8 @@ pub fn run() {
                         if phase == "None" || phase == "Lobby" {
                             reset_champ_select_tracker(&app_h2, &tracker).await;
                         }
+                        // One queue lookup per phase change, shared by auto-accept, tray and ff reminder.
+                        let queue_id = lcu_for_worker.fetch_current_queue_id().await;
                         if phase != "ReadyCheck" {
                             rc_tracker.lock().await.reset();
                         } else if let Some(rc_data) = lcu_for_worker.fetch_ready_check().await {
@@ -1650,15 +1654,15 @@ pub fn run() {
                                 &lcu_for_worker,
                                 &config_for_worker,
                                 &rc_tracker,
+                                Some(queue_id),
                             )
                             .await;
                         }
                         let port = lcu_for_worker.get_auth().await.map(|auth| auth.port);
-                        let queue_id = lcu_for_worker.fetch_current_queue_id().await;
                         update_tray_status(&app_h2, true, port, Some(phase), queue_id);
                         if phase == "InProgress" {
                             let cfg = config_for_worker.read().await.clone();
-                            start_ff_poller(&lcu_for_worker, &poller_for_gameflow, &cfg).await;
+                            start_ff_poller(&lcu_for_worker, &poller_for_gameflow, &cfg, Some(queue_id)).await;
                         } else {
                             // EndOfGame / PreEndOfGame / WaitingForStats / ... all end the game.
                             poller_for_gameflow.stop_polling().await;
@@ -1703,11 +1707,20 @@ pub fn run() {
 }
 
 /// Arm the live-game poller when the reminder is enabled for the current queue.
-async fn start_ff_poller(lcu: &SharedLcu, poller: &Arc<LiveGamePoller>, cfg: &AppConfig) {
+/// `known_queue_id` is the caller's lookup for this phase; `None` fetches it here.
+async fn start_ff_poller(
+    lcu: &SharedLcu,
+    poller: &Arc<LiveGamePoller>,
+    cfg: &AppConfig,
+    known_queue_id: Option<Option<i32>>,
+) {
     if !(cfg.master_enabled && cfg.ff_reminder) {
         return;
     }
-    let queue_id = lcu.fetch_current_queue_id().await;
+    let queue_id = match known_queue_id {
+        Some(q) => q,
+        None => lcu.fetch_current_queue_id().await,
+    };
     // Only run the 8:00 surrender reminder in ARAM or Mayhem (never in Practice Tool / Summoner's Rift).
     if !is_mayhem_queue(queue_id) && !is_aram_queue(queue_id) {
         return;
@@ -1749,6 +1762,8 @@ async fn handle_ready_check_event(
     lcu: &SharedLcu,
     config_lock: &SharedConfig,
     rc_tracker_lock: &Arc<tokio::sync::Mutex<ReadyCheckTracker>>,
+    // The caller's queue lookup for this phase; `None` fetches it here.
+    known_queue_id: Option<Option<i32>>,
 ) {
     let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let player_response = data
@@ -1783,7 +1798,10 @@ async fn handle_ready_check_event(
 
     // Check mode eligibility up-front so Practice Tool / Summoner's Rift never logs "準備自動接受".
     let check_started = Instant::now();
-    let initial_queue_id = lcu.fetch_current_queue_id().await;
+    let initial_queue_id = match known_queue_id {
+        Some(q) => q,
+        None => lcu.fetch_current_queue_id().await,
+    };
     let mode = queue_mode_name(initial_queue_id);
     let allowed = if cfg.accept_modes.is_empty() {
         mode == "ARAM" || mode == "Mayhem"
