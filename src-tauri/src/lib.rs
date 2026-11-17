@@ -535,19 +535,6 @@ fn bench_lock_remaining_secs(
 /// suggestions or automation are enabled, so the lock clock is already running
 /// by the time a swap is considered. A snapshot without `benchChampions` keeps
 /// the existing clocks instead of clearing them.
-/// After a bench swap we pause 3s before the next one, but only while we hold
-/// the champion we swapped for. If a teammate got it first, the next pick in
-/// line is chased right away instead of waiting out the pause.
-fn bench_swap_cooldown_active(
-    last_swap: Option<(Instant, i32)>,
-    my_champ_id: i32,
-    now: Instant,
-) -> bool {
-    last_swap.is_some_and(|(at, champ)| {
-        champ == my_champ_id && now.duration_since(at).as_secs_f64() < BENCH_LOCK_SECS
-    })
-}
-
 fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json::Value) {
     let Some(bench) = data.get("benchChampions").and_then(|v| v.as_array()) else {
         return;
@@ -724,7 +711,6 @@ async fn run_auto_bench_swap(
         }
         if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
-            tr.last_bench_swap = Some((Instant::now(), champion_id));
             tr.bench_retry_target = None;
             tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
@@ -759,6 +745,16 @@ async fn run_auto_bench_swap(
             abort_auto_bench_swap(&app, &tracker, champion_id, "已離開選角").await;
             return;
         };
+        // A resend from a snapshot taken before our earlier swap landed: we
+        // already hold the champion, so there is nothing to retry or report.
+        if session_my_champ_id(&session) == champion_id {
+            let mut tr = tracker.lock().await;
+            if tr.bench_retry_target == Some(champion_id) {
+                tr.bench_retry_target = None;
+            }
+            emit_champ_select_state(&app, &tr);
+            return;
+        }
         if !session_bench_champion_ids(&session).contains(&champion_id) {
             abort_auto_bench_swap(
                 &app,
@@ -818,7 +814,6 @@ async fn finish_manual_bench_snipe(
     reason: String,
 ) {
     let mut tr = tracker.lock().await;
-    tr.last_bench_swap = Some((Instant::now(), champion_id));
     tr.bench_retry_target = None;
     tr.manual_snipe_target = None;
     tr.manual_bench_hold = Some(champion_id);
@@ -2447,115 +2442,110 @@ async fn handle_champ_select_event(
         .unwrap_or(false);
     // A manual overview snipe owns the bench until it lands or gives up.
     if bench_enabled && my_champ_id > 0 && tr.manual_snipe_target.is_none() {
-        let cooldown_ok =
-            !bench_swap_cooldown_active(tr.last_bench_swap, my_champ_id, Instant::now());
-
-        if cooldown_ok {
-            let mut bench_champs = Vec::new();
-            if let Some(b_arr) = data.get("benchChampions").and_then(|v| v.as_array()) {
-                for b in b_arr {
-                    if let Some(cid) = b.get("championId").and_then(|v| v.as_i64()) {
-                        bench_champs.push(cid as i32);
-                    }
+        let mut bench_champs = Vec::new();
+        if let Some(b_arr) = data.get("benchChampions").and_then(|v| v.as_array()) {
+            for b in b_arr {
+                if let Some(cid) = b.get("championId").and_then(|v| v.as_i64()) {
+                    bench_champs.push(cid as i32);
                 }
             }
+        }
 
-            let remaining_sec = remaining_phase_secs(data).filter(|&s| s >= 0).unwrap_or(35);
-            let decision = ChampSelectRuleEngine::evaluate_bench(
-                my_champ_id,
-                &bench_champs,
-                profile,
-                settings,
-                remaining_sec,
-                tr.manual_bench_hold,
-            );
+        let remaining_sec = remaining_phase_secs(data).filter(|&s| s >= 0).unwrap_or(35);
+        let decision = ChampSelectRuleEngine::evaluate_bench(
+            my_champ_id,
+            &bench_champs,
+            profile,
+            settings,
+            remaining_sec,
+            tr.manual_bench_hold,
+        );
 
-            if let BenchDecision::Skip { reason } = &decision {
-                tr.last_bench_verdict = Some(format!("略過板凳建議：{}", reason));
-                // A bench skip is otherwise invisible in the log: record why the
-                // rule engine declined to suggest a swap (manual hold, timing,
-                // threshold, flags). Deduped per reason and throttled so event
-                // bursts don't flood.
-                let key = format!("{}|{}", my_champ_id, reason);
-                let throttle_ok = tr
-                    .last_bench_skip_log_time
-                    .is_none_or(|t| t.elapsed().as_secs() >= 30);
-                if tr.last_bench_skip_log_key.as_ref() != Some(&key) || throttle_ok {
-                    tr.last_bench_skip_log_key = Some(key);
-                    tr.last_bench_skip_log_time = Some(Instant::now());
-                    let _ = app_handle.emit(
-                        "lcu-log",
-                        serde_json::json!({
-                            "kind": "skip",
-                            "title": "略過板凳建議",
-                            "reason": reason
-                        }),
-                    );
-                }
-                // There is no suggestion any more: drop the bench assist in the UI.
-                if tr.bench_suggest_target.take().is_some() {
-                    emit_lcu_assist(
-                        app_handle,
-                        serde_json::json!({ "kind": "clear", "target": "bench" }),
-                    );
-                }
+        if let BenchDecision::Skip { reason } = &decision {
+            tr.last_bench_verdict = Some(format!("略過板凳建議：{}", reason));
+            // A bench skip is otherwise invisible in the log: record why the
+            // rule engine declined to suggest a swap (manual hold, timing,
+            // threshold, flags). Deduped per reason and throttled so event
+            // bursts don't flood.
+            let key = format!("{}|{}", my_champ_id, reason);
+            let throttle_ok = tr
+                .last_bench_skip_log_time
+                .is_none_or(|t| t.elapsed().as_secs() >= 30);
+            if tr.last_bench_skip_log_key.as_ref() != Some(&key) || throttle_ok {
+                tr.last_bench_skip_log_key = Some(key);
+                tr.last_bench_skip_log_time = Some(Instant::now());
+                let _ = app_handle.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": "skip",
+                        "title": "略過板凳建議",
+                        "reason": reason
+                    }),
+                );
+            }
+            // There is no suggestion any more: drop the bench assist in the UI.
+            if tr.bench_suggest_target.take().is_some() {
+                emit_lcu_assist(
+                    app_handle,
+                    serde_json::json!({ "kind": "clear", "target": "bench" }),
+                );
+            }
+        }
+
+        if let BenchDecision::Swap {
+            target_champ_id,
+            reason,
+            ..
+        } = decision
+        {
+            tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
+            // By default only suggest the swap: `swap_bench_champion` sends it
+            // once the player clicks. With `auto_bench_execute` on, the backend
+            // sends it itself after the 3s bench lock. Emit once per suggested
+            // target so event bursts do not spam the UI.
+            if tr.bench_suggest_target != Some(target_champ_id) {
+                tr.bench_suggest_target = Some(target_champ_id);
+                emit_lcu_assist(
+                    app_handle,
+                    serde_json::json!({
+                        "kind": "bench",
+                        "champ_id": target_champ_id,
+                        "reason": reason.clone()
+                    }),
+                );
+                let _ = app_handle.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": "sys",
+                        "title": "建議換成板凳英雄",
+                        "reason": reason
+                    }),
+                );
             }
 
-            if let BenchDecision::Swap {
-                target_champ_id,
-                reason,
-                ..
-            } = decision
+            // Opt-in automation: send the swap ourselves, but only after the
+            // local 3s bench lock has expired. Off by default, and never
+            // while a manual snipe or another auto swap owns the bench.
+            if settings.auto_bench_execute
+                && tr.manual_snipe_target.is_none()
+                && tr.bench_retry_target.is_none()
             {
-                tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
-                // By default only suggest the swap: `swap_bench_champion` sends it
-                // once the player clicks. With `auto_bench_execute` on, the backend
-                // sends it itself after the 3s bench lock. Emit once per suggested
-                // target so event bursts do not spam the UI.
-                if tr.bench_suggest_target != Some(target_champ_id) {
-                    tr.bench_suggest_target = Some(target_champ_id);
-                    emit_lcu_assist(
-                        app_handle,
-                        serde_json::json!({
-                            "kind": "bench",
-                            "champ_id": target_champ_id,
-                            "reason": reason.clone()
-                        }),
-                    );
-                    let _ = app_handle.emit(
-                        "lcu-log",
-                        serde_json::json!({
-                            "kind": "sys",
-                            "title": "建議換成板凳英雄",
-                            "reason": reason
-                        }),
-                    );
-                }
-
-                // Opt-in automation: send the swap ourselves, but only after the
-                // local 3s bench lock has expired. Off by default, and never
-                // while a manual snipe or another auto swap owns the bench.
-                if settings.auto_bench_execute
-                    && tr.manual_snipe_target.is_none()
-                    && tr.bench_retry_target.is_none()
-                {
-                    tr.bench_retry_target = Some(target_champ_id);
-                    emit_champ_select_state(app_handle, &tr);
-                    let app_auto = app_handle.clone();
-                    let lcu_auto: SharedLcu = Arc::clone(lcu);
-                    let tracker_auto: SharedTracker = Arc::clone(tracker_lock);
-                    let retry_ms = config.bench_retry_interval_ms;
-                    spawn(async move {
-                        run_auto_bench_swap(
-                            app_auto,
-                            lcu_auto,
-                            tracker_auto,
-                            target_champ_id,
-                            retry_ms,
-                        )
-                        .await;
-                    });
-                }
+                tr.bench_retry_target = Some(target_champ_id);
+                emit_champ_select_state(app_handle, &tr);
+                let app_auto = app_handle.clone();
+                let lcu_auto: SharedLcu = Arc::clone(lcu);
+                let tracker_auto: SharedTracker = Arc::clone(tracker_lock);
+                let retry_ms = config.bench_retry_interval_ms;
+                spawn(async move {
+                    run_auto_bench_swap(
+                        app_auto,
+                        lcu_auto,
+                        tracker_auto,
+                        target_champ_id,
+                        retry_ms,
+                    )
+                    .await;
+                });
             }
         }
     }
@@ -2814,14 +2804,13 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_swap_cooldown_active,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs,
         can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
         validate_trade_chat_text,
     };
     use crate::config;
     use serde_json::json;
-    use std::time::Instant;
 
     #[test]
     fn test_save_config_error_serializes_kind_and_message() {
@@ -2977,19 +2966,6 @@ mod tests {
         });
         assert_eq!(session_my_champ_id(&session), 145);
         assert_eq!(session_my_champ_id(&json!({})), 0);
-    }
-
-    #[test]
-    fn test_bench_swap_cooldown_only_while_holding_the_swapped_champion() {
-        let at = Instant::now();
-        let soon = at + std::time::Duration::from_millis(500);
-        let later = at + std::time::Duration::from_millis(3100);
-        // We hold Corki (42), the champion we just swapped for: pause.
-        assert!(bench_swap_cooldown_active(Some((at, 42)), 42, soon));
-        // A teammate got Corki first; we still hold our old champion: no pause.
-        assert!(!bench_swap_cooldown_active(Some((at, 42)), 800, soon));
-        assert!(!bench_swap_cooldown_active(Some((at, 42)), 42, later));
-        assert!(!bench_swap_cooldown_active(None, 42, soon));
     }
 
     #[test]
