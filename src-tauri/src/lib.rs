@@ -649,17 +649,25 @@ fn session_bench_champion_ids(session: &serde_json::Value) -> Vec<i32> {
 /// it) or champ select ended. A swap may be sent only after this returns
 /// `Ok(())`. The final sleep may skip the last poll; callers POST immediately
 /// and verify the bench only if that POST fails.
+/// Why waiting out the bench lock ended without a swap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BenchWaitError {
+    /// The champion left the bench: a teammate took it. Not an error.
+    LeftBench,
+    LeftChampSelect,
+}
+
 async fn wait_for_bench_lock(
     lcu: &SharedLcu,
     tracker: &SharedTracker,
     champion_id: i32,
-) -> Result<(), String> {
+) -> Result<(), BenchWaitError> {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
     loop {
         let session = lcu
             .fetch_champ_select_session()
             .await
-            .map_err(|_| "已離開選角".to_string())?;
+            .map_err(|_| BenchWaitError::LeftChampSelect)?;
         let on_bench = session_bench_champion_ids(&session).contains(&champion_id);
 
         let phase_left = phase_left_secs(&session);
@@ -684,7 +692,7 @@ async fn wait_for_bench_lock(
         };
 
         if !on_bench {
-            return Err(format!("英雄 (ID: {}) 已離開板凳", champion_id));
+            return Err(BenchWaitError::LeftBench);
         }
 
         let remaining = bench_lock_remaining_secs(seen_elapsed, &phase, phase_elapsed_secs);
@@ -722,6 +730,8 @@ async fn abort_auto_bench_swap(
     app: &tauri::AppHandle,
     tracker: &SharedTracker,
     champion_id: i32,
+    kind: &str,
+    title: &str,
     reason: &str,
 ) {
     let mut tr = tracker.lock().await;
@@ -736,8 +746,8 @@ async fn abort_auto_bench_swap(
     let _ = app.emit(
         "lcu-log",
         serde_json::json!({
-            "kind": "err",
-            "title": "自動換角已停止",
+            "kind": kind,
+            "title": title,
             "reason": reason,
         }),
     );
@@ -771,8 +781,18 @@ async fn run_auto_bench_swap(
             None => format!("【{}】還沒有上板凳時間，開始等滿 3 秒鎖", champ_name),
         },
     );
-    if let Err(reason) = wait_for_bench_lock(&lcu, &tracker, champion_id).await {
-        abort_auto_bench_swap(&app, &tracker, champion_id, &reason).await;
+    if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id).await {
+        match e {
+            BenchWaitError::LeftBench => {
+                let reason = format!("【{}】還在 3 秒鎖內就被隊友換走，改找下一個順位", champ_name);
+                abort_auto_bench_swap(&app, &tracker, champion_id, "skip", "沒換到板凳英雄", &reason)
+                    .await
+            }
+            BenchWaitError::LeftChampSelect => {
+                abort_auto_bench_swap(&app, &tracker, champion_id, "err", "自動換角已停止", "已離開選角")
+                    .await
+            }
+        }
         return;
     }
     let unlocked_at = Instant::now();
@@ -858,7 +878,8 @@ async fn run_auto_bench_swap(
         // bench before the next attempt instead of paying a GET before every
         // POST on the fast path.
         let Ok(session) = lcu.fetch_champ_select_session().await else {
-            abort_auto_bench_swap(&app, &tracker, champion_id, "已離開選角").await;
+            abort_auto_bench_swap(&app, &tracker, champion_id, "err", "自動換角已停止", "已離開選角")
+                .await;
             return;
         };
         // A resend from a snapshot taken before our earlier swap landed: we
@@ -876,7 +897,9 @@ async fn run_auto_bench_swap(
                 &app,
                 &tracker,
                 champion_id,
-                &format!("英雄 (ID: {}) 已離開板凳", champion_id),
+                "skip",
+                "沒換到板凳英雄",
+                &format!("【{}】被隊友先換走，改找下一個順位", champ_name),
             )
             .await;
             return;
@@ -895,6 +918,8 @@ async fn run_auto_bench_swap(
         &app,
         &tracker,
         champion_id,
+        "err",
+        "自動換角已停止",
         &format!("英雄 (ID: {}) 自動換角重試 4 次仍失敗，已停止", champion_id),
     )
     .await;
@@ -1017,7 +1042,14 @@ async fn swap_bench_champion(
         // The 3s bench lock is enforced here: nothing is sent before it expires.
         // The wall-clock cap starts counting only after the wait, so a click at
         // second 0 still gets its full retry budget.
-        if let Err(reason) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id).await {
+        if let Err(e) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id).await {
+            let (kind, reason) = match e {
+                BenchWaitError::LeftBench => (
+                    "skip",
+                    format!("英雄 (ID: {}) 還在 3 秒鎖內就被隊友換走", champion_id),
+                ),
+                BenchWaitError::LeftChampSelect => ("err", "已離開選角".to_string()),
+            };
             let mut tr = tracker_retry.lock().await;
             if tr.manual_snipe_generation == my_gen {
                 tr.manual_snipe_target = None;
@@ -1033,7 +1065,7 @@ async fn swap_bench_champion(
             let _ = app_retry.emit(
                 "lcu-log",
                 serde_json::json!({
-                    "kind": "err",
+                    "kind": kind,
                     "title": "手動搶角已停止",
                     "reason": reason,
                 }),
