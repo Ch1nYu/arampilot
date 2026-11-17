@@ -554,6 +554,8 @@ pub struct PendingBenchSwap {
     pub champ_id: i32,
     pub unlocked_at: std::time::Instant,
     pub attempt: u32,
+    /// Earlier requests for this champion LCU accepted but that never landed.
+    pub ignored_sends: u32,
 }
 
 /// What the live session says about a pending bench swap.
@@ -634,6 +636,25 @@ impl ChampSelectSessionTracker {
         self.prev_bot_set_spells = None;
         self.event_timing = EventTiming::default();
         self.pending_bench_swap = None;
+    }
+
+    /// Record a bench swap LCU just accepted. When an earlier accepted request
+    /// for the same champion is still unsettled, it never landed: keep its
+    /// unlock time, count it, and return it so the caller can log the resend.
+    pub fn record_bench_swap_sent(
+        &mut self,
+        champ_id: i32,
+        unlocked_at: std::time::Instant,
+        attempt: u32,
+    ) -> Option<PendingBenchSwap> {
+        let previous = self.pending_bench_swap.filter(|p| p.champ_id == champ_id);
+        self.pending_bench_swap = Some(PendingBenchSwap {
+            champ_id,
+            unlocked_at: previous.map_or(unlocked_at, |p| p.unlocked_at),
+            attempt,
+            ignored_sends: previous.map_or(0, |p| p.ignored_sends + 1),
+        });
+        previous
     }
 
     /// Settle a pending bench swap against a session snapshot that lists the bench.
@@ -752,6 +773,7 @@ mod tests {
             champ_id: 42,
             unlocked_at: std::time::Instant::now(),
             attempt: 0,
+            ignored_sends: 0,
         };
         let mut tr = ChampSelectSessionTracker {
             pending_bench_swap: Some(pending),
@@ -777,6 +799,26 @@ mod tests {
             Some(BenchSwapOutcome::Landed(pending))
         );
         assert_eq!(tr.resolve_pending_bench_swap(42, &[800]), None);
+    }
+
+    #[test]
+    fn test_resent_bench_swap_counts_the_request_that_never_landed() {
+        let first_unlock = std::time::Instant::now();
+        let mut tr = ChampSelectSessionTracker::default();
+        assert_eq!(tr.record_bench_swap_sent(133, first_unlock, 0), None);
+
+        // LCU accepted the first request but the session still shows Quinn on
+        // the bench; a later task sends it again.
+        let later = first_unlock + std::time::Duration::from_secs(4);
+        let previous = tr.record_bench_swap_sent(133, later, 0).unwrap();
+        assert_eq!(previous.ignored_sends, 0);
+        let pending = tr.pending_bench_swap.unwrap();
+        assert_eq!(pending.ignored_sends, 1);
+        assert_eq!(pending.unlocked_at, first_unlock);
+
+        // A different champion starts a fresh count.
+        assert_eq!(tr.record_bench_swap_sent(17, later, 0), None);
+        assert_eq!(tr.pending_bench_swap.unwrap().ignored_sends, 0);
     }
 
     #[test]

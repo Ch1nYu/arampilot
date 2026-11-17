@@ -546,12 +546,21 @@ fn log_bench_swap_outcome(
         engine::BenchSwapOutcome::Landed(p) => (
             "act",
             "已自動換成板凳英雄",
-            format!(
-                "已換到【{}】，板凳解鎖後 {} ms 確認到手（第 {} 次嘗試）",
-                name_of(p.champ_id),
-                p.unlocked_at.elapsed().as_millis(),
-                p.attempt + 1
-            ),
+            if p.ignored_sends == 0 {
+                format!(
+                    "已換到【{}】，板凳解鎖後 {} ms 確認到手（第 {} 次嘗試）",
+                    name_of(p.champ_id),
+                    p.unlocked_at.elapsed().as_millis(),
+                    p.attempt + 1
+                )
+            } else {
+                format!(
+                    "已換到【{}】，板凳解鎖後 {} ms 確認到手（前 {} 次請求 LCU 有接受但沒換到）",
+                    name_of(p.champ_id),
+                    p.unlocked_at.elapsed().as_millis(),
+                    p.ignored_sends
+                )
+            },
         ),
         engine::BenchSwapOutcome::Lost(p) => (
             "skip",
@@ -859,11 +868,7 @@ async fn run_auto_bench_swap(
             // as a bot swap and takes no manual hold.
             // LCU accepting the request does not mean we got the champion (a
             // teammate may be faster): the next sessions settle and log it.
-            tr.pending_bench_swap = Some(engine::PendingBenchSwap {
-                champ_id: champion_id,
-                unlocked_at,
-                attempt,
-            });
+            let ignored = tr.record_bench_swap_sent(champion_id, unlocked_at, attempt);
             tr.last_bench_verdict = Some(format!("已送出換角請求 (ID: {})，等待確認", champion_id));
             emit_champ_select_state(&app, &tr);
             drop(tr);
@@ -871,6 +876,18 @@ async fn run_auto_bench_swap(
                 &app,
                 serde_json::json!({ "kind": "clear", "target": "bench" }),
             );
+            if let Some(previous) = ignored {
+                emit_bench_diag(
+                    &app,
+                    "上次請求沒生效",
+                    format!(
+                        "【{}】LCU 接受過 {} 次換角請求但都沒換到，已重送（距第一次解鎖 {} ms）",
+                        champ_name,
+                        previous.ignored_sends + 1,
+                        previous.unlocked_at.elapsed().as_millis()
+                    ),
+                );
+            }
             return;
         }
 
