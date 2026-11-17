@@ -529,12 +529,6 @@ fn bench_lock_remaining_secs(
     from_seen.max(from_phase)
 }
 
-/// Record when every champion now on the bench was first seen there.
-///
-/// Runs on every champ select snapshot, independently of whether bench
-/// suggestions or automation are enabled, so the lock clock is already running
-/// by the time a swap is considered. A snapshot without `benchChampions` keeps
-/// the existing clocks instead of clearing them.
 /// Log what really happened to an auto bench swap once the session shows it.
 fn log_bench_swap_outcome(
     app_handle: &tauri::AppHandle,
@@ -575,6 +569,12 @@ fn log_bench_swap_outcome(
     );
 }
 
+/// Record when every champion now on the bench was first seen there.
+///
+/// Runs on every champ select snapshot, independently of whether bench
+/// suggestions or automation are enabled, so the lock clock is already running
+/// by the time a swap is considered. A snapshot without `benchChampions` keeps
+/// the existing clocks instead of clearing them.
 fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json::Value) {
     let Some(bench) = data.get("benchChampions").and_then(|v| v.as_array()) else {
         return;
