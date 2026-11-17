@@ -5,6 +5,7 @@ pub mod fatal;
 pub mod icon_cache;
 pub mod lcu;
 pub mod livegame;
+pub mod postgame;
 pub mod single_instance;
 
 use config::{AppConfig, ConfigManager, SaveError};
@@ -1672,6 +1673,8 @@ pub fn run() {
             let tracker_for_status = Arc::clone(&tracker);
             let rc_tracker = Arc::new(tokio::sync::Mutex::new(ReadyCheckTracker::default()));
             let rc_tracker_for_status = Arc::clone(&rc_tracker);
+            // Post-game automations: auto play-again and auto start-queue.
+            let auto_queue_tracker = Arc::new(tokio::sync::Mutex::new(postgame::AutoQueueTracker::default()));
 
             // Background task: forward LCU connection status to frontend
             let app_h1 = app_handle.clone();
@@ -1836,6 +1839,19 @@ pub fn run() {
                         // sees no port/token change, so no status event fires).
                         let _ = sync_active_account(&app_h2, &lcu_for_worker, &account_for_worker)
                             .await;
+                    } else if event.uri == "/lol-lobby/v2/lobby" {
+                        // Party membership / readiness changed while in the lobby:
+                        // retry the auto start-queue while it is still armed.
+                        let armed = auto_queue_tracker.lock().await.armed;
+                        if armed {
+                            try_auto_queue(
+                                &app_h2,
+                                &lcu_for_worker,
+                                &config_for_worker,
+                                &auto_queue_tracker,
+                            )
+                            .await;
+                        }
                     } else if event.uri == "/lol-gameflow/v1/gameflow-phase" {
                         let phase = event.data.as_str().unwrap_or("");
                         if phase == "None" || phase == "Lobby" {
@@ -1864,6 +1880,76 @@ pub fn run() {
                         } else {
                             // EndOfGame / PreEndOfGame / WaitingForStats / ... all end the game.
                             poller_for_gameflow.stop_polling().await;
+                        }
+
+                        // Post-game automations: skip the stats screen and restart the queue
+                        // as party leader once everyone is back. One automation per finished game.
+                        let mode_ok = is_aram_queue(queue_id) || is_mayhem_queue(queue_id);
+                        let cfg = config_for_worker.read().await.clone();
+                        match phase {
+                            "Matchmaking" => {
+                                // The player is queued (by us or by hand): remember the
+                                // party size for the next game and disarm, so a queue the
+                                // player cancels later never restarts on its own.
+                                if let Some(lobby) = lcu_for_worker.fetch_lobby().await {
+                                    let snapshot = postgame::lobby_snapshot(&lobby);
+                                    let mut tr = auto_queue_tracker.lock().await;
+                                    tr.last_party_size = snapshot.members;
+                                    tr.armed = false;
+                                    tr.last_wait_log = None;
+                                }
+                            }
+                            "WaitingForStats" | "PreEndOfGame" => {
+                                if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
+                                    auto_queue_tracker.lock().await.armed = true;
+                                }
+                            }
+                            "EndOfGame" => {
+                                if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
+                                    auto_queue_tracker.lock().await.armed = true;
+                                }
+                                if cfg.master_enabled && cfg.auto_play_again && mode_ok {
+                                    match lcu_for_worker.play_again().await {
+                                        Ok(()) => {
+                                            let _ = app_h2.emit(
+                                                "lcu-log",
+                                                serde_json::json!({
+                                                    "kind": "act",
+                                                    "title": "已自動跳過結算畫面",
+                                                    "reason": "POST /lol-lobby/v2/play-again",
+                                                }),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            let _ = app_h2.emit(
+                                                "lcu-log",
+                                                serde_json::json!({
+                                                    "kind": "err",
+                                                    "title": "自動回大廳失敗",
+                                                    "reason": e,
+                                                }),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            "Lobby" => {
+                                let armed = auto_queue_tracker.lock().await.armed;
+                                if armed {
+                                    try_auto_queue(
+                                        &app_h2,
+                                        &lcu_for_worker,
+                                        &config_for_worker,
+                                        &auto_queue_tracker,
+                                    )
+                                    .await;
+                                }
+                            }
+                            // Any other game phase means the lobby flow is over.
+                            "ChampSelect" | "InProgress" | "None" | "ReadyCheck" | "GameStart" => {
+                                auto_queue_tracker.lock().await.armed = false;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1939,6 +2025,121 @@ impl ReadyCheckTracker {
         self.accepted_this_phase = false;
         self.timer_running = false;
         self.generation = self.generation.wrapping_add(1);
+    }
+}
+
+/// Run the auto start-queue automation for a lobby event / Lobby phase.
+///
+/// Fires at most once per finished game: the tracker is disarmed inside the
+/// same lock hold as the decision, before any await that could let a second
+/// event re-enter. No tracker lock guard is held across the LCU HTTP awaits.
+async fn try_auto_queue(
+    app: &tauri::AppHandle,
+    lcu: &SharedLcu,
+    config_lock: &SharedConfig,
+    tracker_lock: &Arc<tokio::sync::Mutex<postgame::AutoQueueTracker>>,
+) {
+    // A stale armed flag with the feature switched off must not queue later.
+    let cfg = config_lock.read().await.clone();
+    {
+        let mut tr = tracker_lock.lock().await;
+        if !tr.armed || !cfg.master_enabled || !cfg.auto_start_queue {
+            tr.armed = false;
+            return;
+        }
+    }
+
+    // No lobby to inspect (client gone, lobby left): stay armed and wait for
+    // a later lobby event or phase change.
+    let Some(lobby) = lcu.fetch_lobby().await else {
+        return;
+    };
+    let snapshot = postgame::lobby_snapshot(&lobby);
+    let mode_ok = is_aram_queue(snapshot.queue_id) || is_mayhem_queue(snapshot.queue_id);
+    let decision = {
+        let mut tr = tracker_lock.lock().await;
+        let decision = postgame::decide_auto_queue(&tr, &snapshot, mode_ok);
+        if matches!(decision, postgame::AutoQueueDecision::Start) {
+            // Disarm before any await: a second event must not re-enter and
+            // send a second search for the same finished game.
+            tr.armed = false;
+        }
+        decision
+    };
+
+    match decision {
+        postgame::AutoQueueDecision::GiveUp { reason } => {
+            tracker_lock.lock().await.armed = false;
+            let _ = app.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "skip",
+                    "title": "不自動開始配對",
+                    "reason": reason,
+                }),
+            );
+        }
+        postgame::AutoQueueDecision::Wait { reason } => {
+            let mut tr = tracker_lock.lock().await;
+            // Stay armed; log only when the reason changed so lobby updates
+            // while waiting do not spam the log with the same line.
+            if tr.last_wait_log.as_deref() != Some(reason.as_str()) {
+                let _ = app.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": "skip",
+                        "title": "等待自動開始配對",
+                        "reason": reason,
+                    }),
+                );
+                tr.last_wait_log = Some(reason);
+            }
+        }
+        postgame::AutoQueueDecision::Start => {
+            // Let the post-game screen settle before re-checking the lobby.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let Some(lobby) = lcu.fetch_lobby().await else {
+                // Lobby vanished mid-check: re-arm, a later event retries.
+                tracker_lock.lock().await.armed = true;
+                return;
+            };
+            let snapshot = postgame::lobby_snapshot(&lobby);
+            let mode_ok = is_aram_queue(snapshot.queue_id) || is_mayhem_queue(snapshot.queue_id);
+            let still_start = {
+                let tr = tracker_lock.lock().await;
+                matches!(
+                    postgame::decide_auto_queue(&tr, &snapshot, mode_ok),
+                    postgame::AutoQueueDecision::Start
+                )
+            };
+            if !still_start {
+                tracker_lock.lock().await.armed = true;
+                return;
+            }
+            let needed = tracker_lock.lock().await.last_party_size.max(1);
+            match lcu.start_matchmaking_search().await {
+                Ok(()) => {
+                    let _ = app.emit(
+                        "lcu-log",
+                        serde_json::json!({
+                            "kind": "act",
+                            "title": "已自動開始配對",
+                            "reason": format!("房主自動開始配對（大廳 {}/{}）", snapshot.members, needed),
+                        }),
+                    );
+                }
+                Err(e) => {
+                    let _ = app.emit(
+                        "lcu-log",
+                        serde_json::json!({
+                            "kind": "err",
+                            "title": "自動開始配對失敗",
+                            "reason": e,
+                        }),
+                    );
+                }
+            }
+        }
     }
 }
 

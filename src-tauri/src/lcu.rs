@@ -1053,6 +1053,25 @@ impl LcuManager {
         let path = "/lol-lobby-team-builder/champ-select/v1/session/quit";
         self.send_unit(reqwest::Method::POST, path, None).await
     }
+    /// Skip the post-game stats screen and return the party to the lobby.
+    pub async fn play_again(&self) -> Result<(), String> {
+        self.ensure_connected().await?;
+        self.send_unit(reqwest::Method::POST, "/lol-lobby/v2/play-again", None)
+            .await
+    }
+
+    /// Start matchmaking for the current lobby (only the party leader can).
+    pub async fn start_matchmaking_search(&self) -> Result<(), String> {
+        self.ensure_connected().await?;
+        self.send_unit(reqwest::Method::POST, "/lol-lobby/v2/lobby/matchmaking/search", None)
+            .await
+    }
+
+    /// Current lobby snapshot; `None` when no client is connected or no lobby exists.
+    pub async fn fetch_lobby(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-lobby/v2/lobby").await
+    }
+
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {
         let path = format!("/lol-chat/v1/conversations/{}/messages", chat_id);
         let payload = serde_json::json!({

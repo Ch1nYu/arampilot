@@ -84,6 +84,9 @@ export interface AppConfig {
   accept_delay_sec: number;
   accept_modes: string[];
   accept_notify: string; // "mute", "sound", "notification"
+  auto_play_again?: boolean;
+  auto_start_queue?: boolean;
+  auto_exit_game?: boolean;
   aram_settings: ModeSettings;
   mayhem_settings: ModeSettings;
   auto_chat_on_swap: boolean;

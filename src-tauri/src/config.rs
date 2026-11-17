@@ -181,6 +181,12 @@ pub struct AppConfig {
     pub accept_delay_sec: f64,
     pub accept_modes: Vec<String>, // ["ARAM", "Mayhem"]
     pub accept_notify: String,     // "mute", "sound", "notification"
+    /// Opt-in: skip the post-game stats screen and return to the lobby after a finished game.
+    pub auto_play_again: bool,
+    /// Opt-in: as party leader, start matchmaking once every party member is back in the lobby.
+    pub auto_start_queue: bool,
+    /// Opt-in: leave the game client when the game ends (no automation uses it yet).
+    pub auto_exit_game: bool,
 
     // Mode-specific automation settings
     pub aram_settings: ModeSettings,
@@ -254,6 +260,9 @@ impl Default for AppConfig {
             accept_delay_sec: 2.0,
             accept_modes: vec!["ARAM".to_string(), "Mayhem".to_string()],
             accept_notify: "sound".to_string(),
+            auto_play_again: false,
+            auto_start_queue: false,
+            auto_exit_game: false,
             aram_settings: ModeSettings::default(),
             mayhem_settings: ModeSettings::default(),
             auto_chat_on_swap: true,
@@ -1244,6 +1253,20 @@ mod tests {
         assert!(cfg.ff_play_sound);
         assert!(!cfg.ff_desktop_notify);
         assert_eq!(cfg.client_close_action, "wait");
+    }
+
+    #[test]
+    fn test_postgame_auto_actions_are_opt_in() {
+        let cfg = AppConfig::default();
+        assert!(!cfg.auto_play_again);
+        assert!(!cfg.auto_start_queue);
+        assert!(!cfg.auto_exit_game);
+        // A config written before these switches existed must load with them off.
+        let legacy: AppConfig = serde_json::from_str(r#"{"auto_accept": true}"#).unwrap();
+        assert!(!legacy.auto_play_again);
+        assert!(!legacy.auto_start_queue);
+        assert!(!legacy.auto_exit_game);
+        assert!(legacy.auto_accept);
     }
 
     #[test]
