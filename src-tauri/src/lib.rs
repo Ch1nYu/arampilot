@@ -149,9 +149,24 @@ fn emit_assist_clear_all(app_handle: &tauri::AppHandle) {
 /// Reset the champ select tracker and tell the frontend the card is idle again.
 async fn reset_champ_select_tracker(app_handle: &tauri::AppHandle, tracker_lock: &SharedTracker) {
     let mut tr = tracker_lock.lock().await;
+    emit_event_timing_summary(app_handle, &tr);
     tr.reset();
     emit_champ_select_state(app_handle, &tr);
     emit_assist_clear_all(app_handle);
+}
+
+/// Log how long this session's champ-select events took, once, before the tracker resets.
+fn emit_event_timing_summary(app_handle: &tauri::AppHandle, tr: &ChampSelectSessionTracker) {
+    if let Some(summary) = tr.event_timing.summary() {
+        let _ = app_handle.emit(
+            "lcu-log",
+            serde_json::json!({
+                "kind": "sys",
+                "title": "選角事件處理耗時",
+                "reason": summary
+            }),
+        );
+    }
 }
 
 const TRAY_TOOLTIP_IDLE: &str = "ARAMPilot — 等待客戶端...";
@@ -664,6 +679,7 @@ async fn run_auto_bench_swap(
         abort_auto_bench_swap(&app, &tracker, champion_id, &reason).await;
         return;
     }
+    let unlocked_at = Instant::now();
 
     // One initial attempt plus at most 3 retries.
     for attempt in 0..4u32 {
@@ -712,7 +728,12 @@ async fn run_auto_bench_swap(
                 serde_json::json!({
                     "kind": "act",
                     "title": "已自動換成板凳英雄",
-                    "reason": format!("板凳解鎖滿 3 秒後自動換取英雄 (ID: {})", champion_id),
+                    "reason": format!(
+                        "板凳解鎖滿 3 秒後自動換取英雄 (ID: {})，解鎖後 {} ms 換角完成（第 {} 次嘗試）",
+                        champion_id,
+                        unlocked_at.elapsed().as_millis(),
+                        attempt + 1
+                    ),
                 }),
             );
             return;
@@ -1596,6 +1617,7 @@ pub fn run() {
                         )
                         .await;
                     } else if event.uri == "/lol-champ-select/v1/session" {
+                        let handle_started = Instant::now();
                         handle_champ_select_event(
                             &event,
                             &app_h2,
@@ -1604,6 +1626,11 @@ pub fn run() {
                             &tracker,
                         )
                         .await;
+                        // A Delete event already logged and reset this session's timing.
+                        if event.event_type != "Delete" {
+                            let handle_ms = handle_started.elapsed().as_secs_f64() * 1000.0;
+                            tracker.lock().await.event_timing.record(handle_ms);
+                        }
                     } else if event.uri == "/lol-summoner/v1/current-summoner" {
                         // Account login / switch without an LCU reconnect (watcher
                         // sees no port/token change, so no status event fires).
@@ -2023,6 +2050,7 @@ async fn handle_champ_select_event(
 ) {
     if event.event_type == "Delete" {
         let mut tr = tracker_lock.lock().await;
+        emit_event_timing_summary(app_handle, &tr);
         tr.reset();
         emit_champ_select_state(app_handle, &tr);
         emit_assist_clear_all(app_handle);
@@ -2069,7 +2097,10 @@ async fn handle_champ_select_event(
         }
     }
 
+    let lock_started = Instant::now();
     let mut tr = tracker_lock.lock().await;
+    tr.event_timing
+        .record_lock_wait(lock_started.elapsed().as_secs_f64() * 1000.0);
     tr.local_cell_id = local_cell_id;
     let old_champ_id = tr.my_champ_id;
     tr.my_champ_id = my_champ_id;
@@ -2289,6 +2320,7 @@ async fn handle_champ_select_event(
                                 tokio::time::sleep(std::time::Duration::from_secs_f64(delay))
                                     .await;
                             }
+                            let delay_done_at = Instant::now();
 
                             // The player may have picked manually while we were waiting.
                             match lcu_auto.fetch_champ_select_session().await {
@@ -2334,7 +2366,11 @@ async fn handle_champ_select_event(
                                         serde_json::json!({
                                             "kind": "act",
                                             "title": "已自動選擇開局英雄卡",
-                                            "reason": reason_auto
+                                            "reason": format!(
+                                                "{}（延遲結束後 {} ms 選卡完成）",
+                                                reason_auto,
+                                                delay_done_at.elapsed().as_millis()
+                                            )
                                         }),
                                     );
                                 }

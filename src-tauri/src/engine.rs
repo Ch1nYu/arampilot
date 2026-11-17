@@ -543,6 +543,43 @@ pub struct ChampSelectSessionTracker {
     /// The bot's previous spell pair: session snapshots queued before the
     /// latest PATCH landed still carry it, and must not read as a manual change.
     pub prev_bot_set_spells: Option<(i32, i32)>,
+    /// How long champ-select events took to handle this session (latency measurements).
+    pub event_timing: EventTiming,
+}
+
+/// Per-session timing of champ-select event handling, logged once when the session ends.
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct EventTiming {
+    pub count: u32,
+    pub total_ms: f64,
+    pub max_ms: f64,
+    pub lock_wait_max_ms: f64,
+}
+
+impl EventTiming {
+    pub fn record(&mut self, handle_ms: f64) {
+        self.count += 1;
+        self.total_ms += handle_ms;
+        self.max_ms = self.max_ms.max(handle_ms);
+    }
+
+    pub fn record_lock_wait(&mut self, wait_ms: f64) {
+        self.lock_wait_max_ms = self.lock_wait_max_ms.max(wait_ms);
+    }
+
+    /// One-line summary for the exec log; `None` when no event was handled.
+    pub fn summary(&self) -> Option<String> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(format!(
+            "處理 {} 個選角事件：平均 {:.1} ms、最長 {:.1} ms；等選角狀態鎖最長 {:.1} ms",
+            self.count,
+            self.total_ms / self.count as f64,
+            self.max_ms,
+            self.lock_wait_max_ms
+        ))
+    }
 }
 
 impl ChampSelectSessionTracker {
@@ -578,6 +615,7 @@ impl ChampSelectSessionTracker {
         self.bot_set_spells = None;
         self.manual_spell_override = false;
         self.prev_bot_set_spells = None;
+        self.event_timing = EventTiming::default();
     }
 
     /// Classify our champion changing from `old_champ_id` to `new_champ_id`.
@@ -666,6 +704,27 @@ impl ChampSelectSessionTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_event_timing_summary() {
+        let mut t = EventTiming::default();
+        assert_eq!(t.summary(), None);
+        t.record(2.0);
+        t.record(6.0);
+        t.record_lock_wait(3.5);
+        t.record_lock_wait(1.0);
+        assert_eq!(
+            t.summary().as_deref(),
+            Some("處理 2 個選角事件：平均 4.0 ms、最長 6.0 ms；等選角狀態鎖最長 3.5 ms")
+        );
+
+        let mut tr = ChampSelectSessionTracker {
+            event_timing: t,
+            ..Default::default()
+        };
+        tr.reset();
+        assert_eq!(tr.event_timing, EventTiming::default());
+    }
 
     #[test]
     fn test_stale_snapshot_with_previous_bot_spells_is_not_manual() {
