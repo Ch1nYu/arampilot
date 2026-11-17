@@ -501,7 +501,8 @@ pub struct ChampSelectSessionTracker {
     pub local_cell_id: i64,
     pub my_champ_id: i32,
     pub processed_trade_ids: HashSet<i64>,
-    pub last_bench_swap_time: Option<std::time::Instant>,
+    /// When our last bench swap was sent, and the champion it was for.
+    pub last_bench_swap: Option<(std::time::Instant, i32)>,
     pub bench_retry_target: Option<i32>,
     pub manual_bench_hold: Option<i32>, // Champion the player manually picked; never auto-swap away from it
     pub bot_expected_champ: Option<i32>, // Champion the bot is acquiring, to tell bot swaps from manual picks
@@ -587,7 +588,7 @@ impl ChampSelectSessionTracker {
         self.local_cell_id = 0;
         self.my_champ_id = 0;
         self.processed_trade_ids.clear();
-        self.last_bench_swap_time = None;
+        self.last_bench_swap = None;
         self.bench_retry_target = None;
         self.manual_bench_hold = None;
         self.bot_expected_champ = None;

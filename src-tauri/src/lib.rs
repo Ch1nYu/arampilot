@@ -535,6 +535,19 @@ fn bench_lock_remaining_secs(
 /// suggestions or automation are enabled, so the lock clock is already running
 /// by the time a swap is considered. A snapshot without `benchChampions` keeps
 /// the existing clocks instead of clearing them.
+/// After a bench swap we pause 3s before the next one, but only while we hold
+/// the champion we swapped for. If a teammate got it first, the next pick in
+/// line is chased right away instead of waiting out the pause.
+fn bench_swap_cooldown_active(
+    last_swap: Option<(Instant, i32)>,
+    my_champ_id: i32,
+    now: Instant,
+) -> bool {
+    last_swap.is_some_and(|(at, champ)| {
+        champ == my_champ_id && now.duration_since(at).as_secs_f64() < BENCH_LOCK_SECS
+    })
+}
+
 fn update_bench_first_seen(tr: &mut ChampSelectSessionTracker, data: &serde_json::Value) {
     let Some(bench) = data.get("benchChampions").and_then(|v| v.as_array()) else {
         return;
@@ -711,7 +724,7 @@ async fn run_auto_bench_swap(
         }
         if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
-            tr.last_bench_swap_time = Some(Instant::now());
+            tr.last_bench_swap = Some((Instant::now(), champion_id));
             tr.bench_retry_target = None;
             tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
@@ -805,7 +818,7 @@ async fn finish_manual_bench_snipe(
     reason: String,
 ) {
     let mut tr = tracker.lock().await;
-    tr.last_bench_swap_time = Some(Instant::now());
+    tr.last_bench_swap = Some((Instant::now(), champion_id));
     tr.bench_retry_target = None;
     tr.manual_snipe_target = None;
     tr.manual_bench_hold = Some(champion_id);
@@ -2434,10 +2447,8 @@ async fn handle_champ_select_event(
         .unwrap_or(false);
     // A manual overview snipe owns the bench until it lands or gives up.
     if bench_enabled && my_champ_id > 0 && tr.manual_snipe_target.is_none() {
-        let now = Instant::now();
-        let cooldown_ok = tr
-            .last_bench_swap_time
-            .is_none_or(|t| now.duration_since(t).as_secs() >= 3);
+        let cooldown_ok =
+            !bench_swap_cooldown_active(tr.last_bench_swap, my_champ_id, Instant::now());
 
         if cooldown_ok {
             let mut bench_champs = Vec::new();
@@ -2803,13 +2814,14 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, bench_lock_remaining_secs,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_swap_cooldown_active,
         can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
         validate_trade_chat_text,
     };
     use crate::config;
     use serde_json::json;
+    use std::time::Instant;
 
     #[test]
     fn test_save_config_error_serializes_kind_and_message() {
@@ -2965,6 +2977,19 @@ mod tests {
         });
         assert_eq!(session_my_champ_id(&session), 145);
         assert_eq!(session_my_champ_id(&json!({})), 0);
+    }
+
+    #[test]
+    fn test_bench_swap_cooldown_only_while_holding_the_swapped_champion() {
+        let at = Instant::now();
+        let soon = at + std::time::Duration::from_millis(500);
+        let later = at + std::time::Duration::from_millis(3100);
+        // We hold Corki (42), the champion we just swapped for: pause.
+        assert!(bench_swap_cooldown_active(Some((at, 42)), 42, soon));
+        // A teammate got Corki first; we still hold our old champion: no pause.
+        assert!(!bench_swap_cooldown_active(Some((at, 42)), 800, soon));
+        assert!(!bench_swap_cooldown_active(Some((at, 42)), 42, later));
+        assert!(!bench_swap_cooldown_active(None, 42, soon));
     }
 
     #[test]
