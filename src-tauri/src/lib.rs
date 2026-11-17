@@ -703,6 +703,19 @@ async fn wait_for_bench_lock(
     }
 }
 
+/// Diagnostic log for bench automation; titles share one prefix so they are easy
+/// to filter (and to drop once the bench timing questions are settled).
+fn emit_bench_diag(app: &tauri::AppHandle, title: &str, reason: String) {
+    let _ = app.emit(
+        "lcu-log",
+        serde_json::json!({
+            "kind": "sys",
+            "title": format!("板凳診斷：{}", title),
+            "reason": reason,
+        }),
+    );
+}
+
 /// Give up on an automatic bench swap: release only what this task owns, then
 /// say why in the log.
 async fn abort_auto_bench_swap(
@@ -740,13 +753,38 @@ async fn run_auto_bench_swap(
     lcu: SharedLcu,
     tracker: SharedTracker,
     champion_id: i32,
+    champ_name: String,
     retry_ms: u64,
 ) {
+    let wait_started = Instant::now();
+    let seen_secs = tracker
+        .lock()
+        .await
+        .bench_first_seen
+        .get(&champion_id)
+        .map(|t| t.elapsed().as_secs_f64());
+    emit_bench_diag(
+        &app,
+        "開始等解鎖",
+        match seen_secs {
+            Some(secs) => format!("【{}】已在板凳上 {:.1} 秒，開始等 3 秒鎖", champ_name, secs),
+            None => format!("【{}】還沒有上板凳時間，開始等滿 3 秒鎖", champ_name),
+        },
+    );
     if let Err(reason) = wait_for_bench_lock(&lcu, &tracker, champion_id).await {
         abort_auto_bench_swap(&app, &tracker, champion_id, &reason).await;
         return;
     }
     let unlocked_at = Instant::now();
+    emit_bench_diag(
+        &app,
+        "已解鎖",
+        format!(
+            "【{}】等了 {} ms，送出換角",
+            champ_name,
+            wait_started.elapsed().as_millis()
+        ),
+    );
 
     // One initial attempt plus at most 3 retries.
     for attempt in 0..4u32 {
@@ -758,15 +796,32 @@ async fn run_auto_bench_swap(
         {
             let mut tr = tracker.lock().await;
             if tr.bench_retry_target != Some(champion_id) {
+                drop(tr);
+                emit_bench_diag(
+                    &app,
+                    "換角工作結束",
+                    format!("【{}】沒送出：已有手動搶角或另一個換角接手", champ_name),
+                );
                 return;
             }
             if tr.manual_bench_hold.is_some() || tr.my_champ_id == champion_id {
                 // Nothing left to do: a manual pick landed, or we already hold it.
+                let why = if tr.my_champ_id == champion_id {
+                    "已經在手上"
+                } else {
+                    "玩家手動選角，保留手動選擇"
+                };
                 tr.bench_retry_target = None;
                 if tr.bot_expected_champ == Some(champion_id) {
                     tr.bot_expected_champ = None;
                 }
                 emit_champ_select_state(&app, &tr);
+                drop(tr);
+                emit_bench_diag(
+                    &app,
+                    "換角工作結束",
+                    format!("【{}】沒送出：{}", champ_name, why),
+                );
                 return;
             }
         }
@@ -2543,6 +2598,19 @@ async fn handle_champ_select_event(
             }
         }
 
+        let name_of = |id: i32| {
+            profile
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("ID:{}", id))
+        };
+        let bench_names = if bench_champs.is_empty() {
+            "空".to_string()
+        } else {
+            bench_champs.iter().map(|&id| name_of(id)).collect::<Vec<_>>().join("、")
+        };
+
         let remaining_sec = remaining_phase_secs(data).filter(|&s| s >= 0).unwrap_or(35);
         let decision = ChampSelectRuleEngine::evaluate_bench(
             my_champ_id,
@@ -2571,7 +2639,7 @@ async fn handle_champ_select_event(
                     serde_json::json!({
                         "kind": "skip",
                         "title": "略過板凳建議",
-                        "reason": reason
+                        "reason": format!("{}（板凳：{}）", reason, bench_names)
                     }),
                 );
             }
@@ -2597,6 +2665,22 @@ async fn handle_champ_select_event(
             // target so event bursts do not spam the UI.
             if tr.bench_suggest_target != Some(target_champ_id) {
                 tr.bench_suggest_target = Some(target_champ_id);
+                // A skip after this suggestion is a new state: log it even if its
+                // reason matches the last skip logged.
+                tr.last_bench_skip_log_key = None;
+                if settings.auto_bench_execute
+                    && let Some(busy) = tr.bench_retry_target.filter(|&b| b != target_champ_id)
+                {
+                    emit_bench_diag(
+                        app_handle,
+                        "暫不改追",
+                        format!(
+                            "正在等【{}】的換角，新建議【{}】要等它結束",
+                            name_of(busy),
+                            name_of(target_champ_id)
+                        ),
+                    );
+                }
                 emit_lcu_assist(
                     app_handle,
                     serde_json::json!({
@@ -2610,7 +2694,7 @@ async fn handle_champ_select_event(
                     serde_json::json!({
                         "kind": "sys",
                         "title": "建議換成板凳英雄",
-                        "reason": reason
+                        "reason": format!("{}（板凳：{}）", reason, bench_names)
                     }),
                 );
             }
@@ -2628,12 +2712,14 @@ async fn handle_champ_select_event(
                 let lcu_auto: SharedLcu = Arc::clone(lcu);
                 let tracker_auto: SharedTracker = Arc::clone(tracker_lock);
                 let retry_ms = config.bench_retry_interval_ms;
+                let champ_name = name_of(target_champ_id);
                 spawn(async move {
                     run_auto_bench_swap(
                         app_auto,
                         lcu_auto,
                         tracker_auto,
                         target_champ_id,
+                        champ_name,
                         retry_ms,
                     )
                     .await;
