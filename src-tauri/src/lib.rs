@@ -2029,6 +2029,12 @@ pub fn run() {
                                 if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
                                     auto_queue_tracker.lock().await.armed = true;
                                 }
+                                if cfg.master_enabled
+                                    && (cfg.auto_honor_party || cfg.auto_start_queue)
+                                    && mode_ok
+                                {
+                                    fill_party_from_game(&lcu_for_worker, &auto_queue_tracker).await;
+                                }
                                 // Honor before play-again resets the ballot.
                                 if cfg.master_enabled && cfg.auto_honor_party && mode_ok {
                                     try_auto_honor(&app_h2, &lcu_for_worker, &auto_queue_tracker)
@@ -2181,6 +2187,38 @@ impl ReadyCheckTracker {
         self.accepted_this_phase = false;
         self.timer_running = false;
         self.generation = self.generation.wrapping_add(1);
+    }
+}
+
+/// When the lobby snapshot from `Matchmaking` is missing (the app started
+/// mid-game), read the premade group from the gameflow session instead, so
+/// auto honor knows the party and auto start-queue waits for all of it.
+async fn fill_party_from_game(
+    lcu: &SharedLcu,
+    tracker_lock: &Arc<tokio::sync::Mutex<postgame::AutoQueueTracker>>,
+) {
+    if !tracker_lock.lock().await.party_puuids.is_empty() {
+        return;
+    }
+    let Some(own) = lcu
+        .fetch_current_summoner()
+        .await
+        .and_then(|s| s.get("puuid").and_then(|v| v.as_str()).map(str::to_string))
+    else {
+        return;
+    };
+    let Some(flow) = lcu.fetch_gameflow_session().await else {
+        return;
+    };
+    let party = postgame::premade_puuids(&flow, &own);
+    if party.is_empty() {
+        return;
+    }
+    let mut tr = tracker_lock.lock().await;
+    if tr.party_puuids.is_empty() {
+        tr.last_party_size = tr.last_party_size.max(party.len());
+        tr.party_puuids = party;
+        tr.own_puuid = Some(own);
     }
 }
 

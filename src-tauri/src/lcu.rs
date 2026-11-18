@@ -1090,6 +1090,11 @@ impl LcuManager {
         self.get_json_opt("/lol-lobby/v2/lobby").await
     }
 
+    /// `/lol-gameflow/v1/session`; its `gameData` lists both teams with premade groups.
+    pub async fn fetch_gameflow_session(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-gameflow/v1/session").await
+    }
+
     /// Honor ballot of the just-finished game; `None` when unavailable
     /// (the ballot only exists between the end of the game and `play_again`).
     pub async fn fetch_honor_ballot(&self) -> Option<serde_json::Value> {

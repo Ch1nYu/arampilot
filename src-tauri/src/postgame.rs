@@ -93,6 +93,37 @@ pub fn lobby_party_puuids(lobby: &serde_json::Value) -> (Vec<String>, Option<Str
     (party, own)
 }
 
+/// Puuids of the player's premade group (the player included) from
+/// `/lol-gameflow/v1/session`: teammates sharing the player's
+/// `teamParticipantId`. Empty when the player is not listed.
+///
+/// Fallback for when the lobby snapshot taken at `Matchmaking` is missing,
+/// e.g. the app was restarted mid-game (2026-11-18 21:18).
+pub fn premade_puuids(gameflow_session: &serde_json::Value, own_puuid: &str) -> Vec<String> {
+    let Some(game_data) = gameflow_session.get("gameData") else {
+        return Vec::new();
+    };
+    for team_key in ["teamOne", "teamTwo"] {
+        let Some(team) = game_data.get(team_key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let puuid_of = |p: &serde_json::Value| p.get("puuid").and_then(|v| v.as_str()).map(str::to_string);
+        let group_of = |p: &serde_json::Value| p.get("teamParticipantId").and_then(|v| v.as_i64());
+        let Some(me) = team.iter().find(|p| puuid_of(p).as_deref() == Some(own_puuid)) else {
+            continue;
+        };
+        let Some(group) = group_of(me) else {
+            return vec![own_puuid.to_string()];
+        };
+        return team
+            .iter()
+            .filter(|p| group_of(p) == Some(group))
+            .filter_map(puuid_of)
+            .collect();
+    }
+    Vec::new()
+}
+
 /// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
 pub fn ballot_game_id(ballot: &serde_json::Value) -> Option<i64> {
     ballot.get("gameId").and_then(|v| v.as_i64())
@@ -347,6 +378,23 @@ mod tests {
         assert_eq!(bare.members, 0);
         assert!(bare.all_ready);
         assert!(bare.can_start);
+    }
+
+    #[test]
+    fn test_premade_puuids_groups_by_team_participant_id() {
+        // Shape seen live 2026-11-18: our teamParticipantId 3 shared by two allies.
+        let flow = serde_json::json!({ "gameData": {
+            "teamOne": [
+                { "puuid": "me", "teamParticipantId": 3 },
+                { "puuid": "a", "teamParticipantId": 2 },
+                { "puuid": "f1", "teamParticipantId": 3 },
+                { "puuid": "f2", "teamParticipantId": 3 }
+            ],
+            "teamTwo": [{ "puuid": "x", "teamParticipantId": 3 }]
+        }});
+        assert_eq!(premade_puuids(&flow, "me"), vec!["me", "f1", "f2"]);
+        assert!(premade_puuids(&flow, "nobody").is_empty());
+        assert!(premade_puuids(&serde_json::json!({}), "me").is_empty());
     }
 
     /// Ballot payload shaped like the live one; `allies` are `(summonerId, puuid)`.
