@@ -189,6 +189,9 @@ pub struct AppConfig {
     pub auto_play_again: bool,
     /// Opt-in: as party leader, start matchmaking once every party member is back in the lobby.
     pub auto_start_queue: bool,
+    /// Opt-in: after an ARAM/Mayhem game, honor every premade party ally
+    /// from the post-game ballot (must run before auto play-again).
+    pub auto_honor_party: bool,
 
     // Mode-specific automation settings
     pub aram_settings: ModeSettings,
@@ -266,6 +269,7 @@ impl Default for AppConfig {
             champ_select_minimize_client: false,
             auto_play_again: false,
             auto_start_queue: false,
+            auto_honor_party: false,
             aram_settings: ModeSettings::default(),
             mayhem_settings: ModeSettings::default(),
             auto_chat_on_swap: true,
@@ -1265,12 +1269,14 @@ mod tests {
         assert!(!cfg.accept_minimize_client);
         assert!(!cfg.champ_select_minimize_client);
         assert!(!cfg.auto_start_queue);
+        assert!(!cfg.auto_honor_party);
         // A config written before these switches existed must load with them off.
         let legacy: AppConfig = serde_json::from_str(r#"{"auto_accept": true}"#).unwrap();
         assert!(!legacy.auto_play_again);
         assert!(!legacy.accept_minimize_client);
         assert!(!legacy.champ_select_minimize_client);
         assert!(!legacy.auto_start_queue);
+        assert!(!legacy.auto_honor_party);
         assert!(legacy.auto_accept);
     }
 

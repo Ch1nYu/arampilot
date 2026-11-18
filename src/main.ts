@@ -469,6 +469,7 @@ const SAVE_ON_CHANGE_IDS = [
   "cfgChampSelectMinimize",
   "cfgAutoPlayAgain",
   "cfgAutoStartQueue",
+  "cfgAutoHonorParty",
 ];
 SAVE_ON_CHANGE_IDS.forEach((id) => {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -576,6 +577,7 @@ function collectConfig(): AppConfig {
     champ_select_minimize_client: checkboxValue("cfgChampSelectMinimize", false),
     auto_play_again: checkboxValue("cfgAutoPlayAgain", false),
     auto_start_queue: checkboxValue("cfgAutoStartQueue", false),
+    auto_honor_party: checkboxValue("cfgAutoHonorParty", false),
     aram_settings: state.currentSettings,
     mayhem_settings: { ...state.currentSettings },
     auto_chat_on_swap: checkboxValue("cfgAutoChat", true),
@@ -781,6 +783,7 @@ function applyConfigToUI(cfg: AppConfig) {
   setCheckbox("cfgChampSelectMinimize", cfg.champ_select_minimize_client ?? false);
   setCheckbox("cfgAutoPlayAgain", cfg.auto_play_again ?? false);
   setCheckbox("cfgAutoStartQueue", cfg.auto_start_queue ?? false);
+  setCheckbox("cfgAutoHonorParty", cfg.auto_honor_party ?? false);
 
   state.currentSettings = normalizeModeSettings(cfg.aram_settings ?? cfg.mayhem_settings);
   writeModeSettingsToUI(state.currentSettings);

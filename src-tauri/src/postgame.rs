@@ -50,7 +50,8 @@ pub fn lobby_snapshot(lobby: &serde_json::Value) -> LobbySnapshot {
     }
 }
 
-/// State machine for "auto start matchmaking once the party is back".
+/// State machine for "auto start matchmaking once the party is back", plus
+/// the premade party snapshot the auto honor needs.
 #[derive(Default)]
 pub struct AutoQueueTracker {
     /// Set after a finished ARAM/Mayhem game; cleared on other phases and
@@ -61,6 +62,93 @@ pub struct AutoQueueTracker {
     pub last_party_size: usize,
     /// Last "wait" reason logged, so unchanged reasons do not spam the log.
     pub last_wait_log: Option<String>,
+    /// Every lobby member puuid (the player included) when the queue started;
+    /// auto honor only touches these. Kept in memory, never logged or stored.
+    pub party_puuids: Vec<String>,
+    /// The player's own puuid, so auto honor never honors itself.
+    pub own_puuid: Option<String>,
+    /// `gameId` already honored, so the ballot is spent once per game.
+    pub honored_game_id: Option<i64>,
+}
+
+/// Party puuids (`members[].puuid`) and the player's own puuid
+/// (`localMember.puuid`) from an LCU lobby payload.
+pub fn lobby_party_puuids(lobby: &serde_json::Value) -> (Vec<String>, Option<String>) {
+    let own = lobby
+        .get("localMember")
+        .and_then(|m| m.get("puuid"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let party = lobby
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|m| m.get("puuid").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    (party, own)
+}
+
+/// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
+pub fn ballot_game_id(ballot: &serde_json::Value) -> Option<i64> {
+    ballot.get("gameId").and_then(|v| v.as_i64())
+}
+
+/// Pick the ballot entries to honor: premade party allies, the player and
+/// anyone already honored excluded, at most `votePool.votes` of them.
+/// Returns `(summonerId, puuid)` pairs; an absent or empty ballot yields none.
+pub fn honor_targets(
+    ballot: &serde_json::Value,
+    party_puuids: &[String],
+    own_puuid: Option<&str>,
+) -> Vec<(u64, String)> {
+    let Some(votes) = ballot
+        .get("votePool")
+        .and_then(|v| v.get("votes"))
+        .and_then(|v| v.as_u64())
+    else {
+        return Vec::new();
+    };
+    let already_honored: Vec<&str> = ballot
+        .get("honoredPlayers")
+        .and_then(|v| v.as_array())
+        .map(|players| {
+            players
+                .iter()
+                .filter_map(|p| p.get("recipientPuuid").and_then(|v| v.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let allies = ballot
+        .get("eligibleAllies")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+
+    let mut targets: Vec<(u64, String)> = Vec::new();
+    for ally in allies {
+        if targets.len() as u64 >= votes {
+            break;
+        }
+        let Some(puuid) = ally.get("puuid").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if Some(puuid) == own_puuid || already_honored.contains(&puuid) {
+            continue;
+        }
+        if !party_puuids.iter().any(|member| member == puuid) {
+            continue;
+        }
+        let Some(summoner_id) = ally.get("summonerId").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        targets.push((summoner_id, puuid.to_string()));
+    }
+    targets
 }
 
 /// What the caller should do about the auto start-queue feature.
@@ -114,6 +202,7 @@ mod tests {
             armed: true,
             last_party_size: party_size,
             last_wait_log: None,
+            ..AutoQueueTracker::default()
         }
     }
 
@@ -258,5 +347,119 @@ mod tests {
         assert_eq!(bare.members, 0);
         assert!(bare.all_ready);
         assert!(bare.can_start);
+    }
+
+    /// Ballot payload shaped like the live one; `allies` are `(summonerId, puuid)`.
+    fn ballot_payload(votes: u64, allies: &[(u64, &str)], honored: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "eligibleAllies": allies
+                .iter()
+                .map(|(summoner_id, puuid)| serde_json::json!({
+                    "botPlayer": false,
+                    "championId": 22,
+                    "puuid": puuid,
+                    "summonerId": summoner_id,
+                    "summonerName": "someone",
+                }))
+                .collect::<Vec<_>>(),
+            "eligibleOpponents": [],
+            "gameId": 464551151,
+            "honoredPlayers": honored
+                .iter()
+                .map(|puuid| serde_json::json!({ "honorType": "HEART", "recipientPuuid": puuid }))
+                .collect::<Vec<_>>(),
+            "votePool": {
+                "votes": votes,
+                "fromGamePlayed": 1,
+                "fromHighHonor": 0,
+                "fromRecentHonors": 1,
+                "fromRollover": 1,
+            },
+        })
+    }
+
+    #[test]
+    fn test_honors_two_premade_teammates_out_of_three() {
+        // Party of three (the player plus two premates) among five allies.
+        let party = vec!["me".to_string(), "p1".into(), "p2".into()];
+        let ballot = ballot_payload(
+            3,
+            &[
+                (1, "p1"),
+                (2, "random-a"),
+                (3, "me"),
+                (4, "p2"),
+                (5, "random-b"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            honor_targets(&ballot, &party, Some("me")),
+            vec![(1, "p1".to_string()), (4, "p2".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_solo_game_honors_nobody() {
+        let party = vec!["me".to_string()];
+        let ballot = ballot_payload(3, &[(3, "me"), (4, "random")], &[]);
+        assert!(honor_targets(&ballot, &party, Some("me")).is_empty());
+    }
+
+    #[test]
+    fn test_honors_are_capped_by_the_vote_count() {
+        let party = vec!["me".to_string(), "p1".into(), "p2".into(), "p3".into()];
+        let ballot = ballot_payload(2, &[(1, "p1"), (2, "p2"), (3, "p3")], &[]);
+        assert_eq!(
+            honor_targets(&ballot, &party, Some("me")),
+            vec![(1, "p1".to_string()), (2, "p2".to_string())]
+        );
+        let none_left = ballot_payload(0, &[(1, "p1")], &[]);
+        assert!(honor_targets(&none_left, &party, Some("me")).is_empty());
+    }
+
+    #[test]
+    fn test_already_honored_party_member_is_skipped() {
+        let party = vec!["me".to_string(), "p1".into(), "p2".into()];
+        let ballot = ballot_payload(3, &[(1, "p1"), (2, "p2")], &["p1"]);
+        assert_eq!(
+            honor_targets(&ballot, &party, Some("me")),
+            vec![(2, "p2".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_missing_or_empty_ballot_honors_nobody() {
+        let party = vec!["me".to_string(), "p1".into()];
+        assert!(honor_targets(&serde_json::json!({}), &party, Some("me")).is_empty());
+        let empty = serde_json::json!({
+            "eligibleAllies": [],
+            "honoredPlayers": [],
+            "votePool": { "votes": 3 },
+        });
+        assert!(honor_targets(&empty, &party, Some("me")).is_empty());
+        // A party that was never recorded cannot match any ally.
+        let ballot = ballot_payload(3, &[(1, "p1")], &[]);
+        assert!(honor_targets(&ballot, &[], Some("me")).is_empty());
+        assert_eq!(ballot_game_id(&ballot), Some(464551151));
+        assert_eq!(ballot_game_id(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn test_lobby_party_puuids_reads_members_and_local_member() {
+        let lobby = serde_json::json!({
+            "localMember": { "puuid": "me", "isLeader": true },
+            "members": [
+                { "puuid": "me" },
+                { "puuid": "p1" },
+                { "summonerId": 1 }
+            ]
+        });
+        let (party, own) = lobby_party_puuids(&lobby);
+        assert_eq!(party, vec!["me".to_string(), "p1".to_string()]);
+        assert_eq!(own.as_deref(), Some("me"));
+        let (party, own) = lobby_party_puuids(&serde_json::json!({}));
+        assert!(party.is_empty());
+        assert_eq!(own, None);
     }
 }

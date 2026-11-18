@@ -1077,6 +1077,35 @@ impl LcuManager {
         self.get_json_opt("/lol-lobby/v2/lobby").await
     }
 
+    /// Honor ballot of the just-finished game; `None` when unavailable
+    /// (the ballot only exists between the end of the game and `play_again`).
+    pub async fn fetch_honor_ballot(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-honor-v2/v1/ballot").await
+    }
+
+    /// Honor one player on the current ballot (`summonerId` is a u64: it does
+    /// not fit an i32).
+    pub async fn honor_player(
+        &self,
+        summoner_id: u64,
+        puuid: &str,
+        game_id: i64,
+    ) -> Result<(), String> {
+        self.ensure_connected().await?;
+        let payload = serde_json::json!({
+            "summonerId": summoner_id,
+            "puuid": puuid,
+            "honorType": "HEART",
+            "gameId": game_id,
+        });
+        self.send_unit(
+            reqwest::Method::POST,
+            "/lol-honor-v2/v1/honor-player",
+            Some(&payload),
+        )
+        .await
+    }
+
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {
         let path = format!("/lol-chat/v1/conversations/{}/messages", chat_id);
         let payload = serde_json::json!({

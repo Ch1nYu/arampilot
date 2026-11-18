@@ -1949,8 +1949,12 @@ pub fn run() {
                                 // player cancels later never restarts on its own.
                                 if let Some(lobby) = lcu_for_worker.fetch_lobby().await {
                                     let snapshot = postgame::lobby_snapshot(&lobby);
+                                    let (party_puuids, own_puuid) =
+                                        postgame::lobby_party_puuids(&lobby);
                                     let mut tr = auto_queue_tracker.lock().await;
                                     tr.last_party_size = snapshot.members;
+                                    tr.party_puuids = party_puuids;
+                                    tr.own_puuid = own_puuid;
                                     tr.armed = false;
                                     tr.last_wait_log = None;
                                 }
@@ -1959,10 +1963,20 @@ pub fn run() {
                                 if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
                                     auto_queue_tracker.lock().await.armed = true;
                                 }
+                                // Honor before play-again resets the ballot.
+                                if cfg.master_enabled && cfg.auto_honor_party && mode_ok {
+                                    try_auto_honor(&app_h2, &lcu_for_worker, &auto_queue_tracker)
+                                        .await;
+                                }
                             }
                             "EndOfGame" => {
                                 if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
                                     auto_queue_tracker.lock().await.armed = true;
+                                }
+                                // The ballot is reset by play-again, so honor first.
+                                if cfg.master_enabled && cfg.auto_honor_party && mode_ok {
+                                    try_auto_honor(&app_h2, &lcu_for_worker, &auto_queue_tracker)
+                                        .await;
                                 }
                                 if cfg.master_enabled && cfg.auto_play_again && mode_ok {
                                     match lcu_for_worker.play_again().await {
@@ -2102,6 +2116,58 @@ impl ReadyCheckTracker {
         self.timer_running = false;
         self.generation = self.generation.wrapping_add(1);
     }
+}
+
+/// Honor every premade party ally on the post-game ballot, at most once per
+/// finished game. Must run before `play_again`, which resets the ballot.
+///
+/// Solo games, an empty party and a missing ballot log nothing. The `gameId`
+/// is recorded inside the same lock hold as the decision, and no tracker lock
+/// is held across the LCU HTTP calls.
+async fn try_auto_honor(
+    app: &tauri::AppHandle,
+    lcu: &SharedLcu,
+    tracker_lock: &Arc<tokio::sync::Mutex<postgame::AutoQueueTracker>>,
+) {
+    // Fetch before taking the tracker lock: the caller is on the game-flow
+    // thread, and this await must not extend a lock guard.
+    let Some(ballot) = lcu.fetch_honor_ballot().await else {
+        return;
+    };
+    let Some(game_id) = postgame::ballot_game_id(&ballot) else {
+        return;
+    };
+    let targets = {
+        let mut tr = tracker_lock.lock().await;
+        if tr.honored_game_id == Some(game_id) {
+            return;
+        }
+        let targets = postgame::honor_targets(&ballot, &tr.party_puuids, tr.own_puuid.as_deref());
+        if targets.is_empty() {
+            return;
+        }
+        // Record before any await: a later phase event must not honor again.
+        tr.honored_game_id = Some(game_id);
+        targets
+    };
+
+    for (summoner_id, puuid) in &targets {
+        if let Err(e) = lcu.honor_player(*summoner_id, puuid, game_id).await {
+            let _ = app.emit(
+                "lcu-log",
+                serde_json::json!({ "kind": "err", "title": "自動按讚失敗", "reason": e }),
+            );
+            return;
+        }
+    }
+    let _ = app.emit(
+        "lcu-log",
+        serde_json::json!({
+            "kind": "act",
+            "title": "已自動按讚組排隊友",
+            "reason": format!("按讚 {} 位組排隊友", targets.len()),
+        }),
+    );
 }
 
 /// Run the auto start-queue automation for a lobby event / Lobby phase.

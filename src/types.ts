@@ -88,6 +88,7 @@ export interface AppConfig {
   champ_select_minimize_client?: boolean;
   auto_play_again?: boolean;
   auto_start_queue?: boolean;
+  auto_honor_party?: boolean;
   aram_settings: ModeSettings;
   mayhem_settings: ModeSettings;
   auto_chat_on_swap: boolean;
