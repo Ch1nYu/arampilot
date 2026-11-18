@@ -877,7 +877,20 @@ async fn run_auto_bench_swap(
             let mut tr = tracker.lock().await;
             tr.bot_expected_champ = Some(champion_id);
         }
-        if lcu.swap_bench(champion_id).await.is_ok() {
+        let sent = lcu.swap_bench(champion_id).await;
+        emit_bench_diag(
+            &app,
+            "LCU 回應",
+            format!(
+                "【{}】第 {} 次送出：{}",
+                champ_name,
+                attempt + unlanded_resends + 1,
+                match &sent {
+                    Ok(reply) | Err(reply) => reply,
+                }
+            ),
+        );
+        if sent.is_ok() {
             let mut tr = tracker.lock().await;
             // `bench_retry_target` stays ours until the swap is checked below, so a
             // new suggestion for the same champion does not start a second job.
@@ -908,15 +921,25 @@ async fn run_auto_bench_swap(
             }
 
             tokio::time::sleep(UNLANDED_RECHECK).await;
-            let check = match lcu.fetch_champ_select_session().await {
-                Ok(session) => engine::check_bench_swap(
+            let session = lcu.fetch_champ_select_session().await.ok();
+            let check = match &session {
+                Some(session) => engine::check_bench_swap(
                     champion_id,
-                    session_my_champ_id(&session),
-                    &session_bench_champion_ids(&session),
+                    session_my_champ_id(session),
+                    &session_bench_champion_ids(session),
                 ),
                 // Left champ select: the session handler resets the tracker.
-                Err(_) => engine::BenchSwapCheck::Lost,
+                None => engine::BenchSwapCheck::Lost,
             };
+            if check == engine::BenchSwapCheck::NotLanded
+                && let Some(session) = &session
+            {
+                emit_bench_diag(
+                    &app,
+                    "沒換到時的選角狀態",
+                    format!("【{}】{}", champ_name, bench_swap_debug(session, champion_id)),
+                );
+            }
             if check != engine::BenchSwapCheck::NotLanded {
                 // Landed or taken: the session handler logs the outcome.
                 release_auto_bench_job(&app, &tracker, champion_id).await;
@@ -997,6 +1020,49 @@ async fn run_auto_bench_swap(
         &format!("英雄 (ID: {}) 自動換角重試 4 次仍失敗，已停止", champion_id),
     )
     .await;
+}
+
+/// Session fields that may explain a bench swap LCU accepted but never applied:
+/// timer phase, bench flags, the target's bench entry and our own cell.
+/// Names and account ids are dropped so the log stays free of personal data.
+fn bench_swap_debug(session: &serde_json::Value, champion_id: i32) -> String {
+    const PRIVATE_KEYS: [&str; 6] = [
+        "gameName",
+        "tagLine",
+        "puuid",
+        "summonerId",
+        "obfuscatedPuuid",
+        "obfuscatedSummonerId",
+    ];
+    let bench_entry = session
+        .get("benchChampions")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|b| b.get("championId").and_then(|v| v.as_i64()) == Some(champion_id as i64))
+        })
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let local_cell_id = session.get("localPlayerCellId").and_then(|v| v.as_i64());
+    let mut own_cell = session
+        .get("myTeam")
+        .and_then(|v| v.as_array())
+        .and_then(|team| {
+            team.iter()
+                .find(|m| m.get("cellId").and_then(|v| v.as_i64()) == local_cell_id)
+        })
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = own_cell.as_object_mut() {
+        obj.retain(|k, _| !PRIVATE_KEYS.contains(&k.as_str()));
+    }
+    format!(
+        "階段 {}、benchEnabled {}、板凳項目 {}、自己 {}",
+        champ_select_phase(session),
+        session.get("benchEnabled").unwrap_or(&serde_json::Value::Null),
+        bench_entry,
+        own_cell
+    )
 }
 
 /// The champion our own cell currently holds in a champ select session.
@@ -3381,6 +3447,22 @@ async fn handle_champ_select_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_bench_swap_debug_keeps_bench_fields_and_drops_identity() {
+        let session = serde_json::json!({
+            "benchEnabled": true,
+            "benchChampions": [{ "championId": 42, "isPriority": false }],
+            "localPlayerCellId": 2,
+            "myTeam": [{ "cellId": 2, "championId": 37, "gameName": "name", "puuid": "p", "summonerId": 1 }],
+            "timer": { "phase": "BAN_PICK" }
+        });
+        let text = super::bench_swap_debug(&session, 42);
+        assert!(text.contains("\"isPriority\":false"));
+        assert!(text.contains("\"championId\":37"));
+        assert!(text.contains("benchEnabled true"));
+        assert!(!text.contains("name") && !text.contains("\"p\"") && !text.contains("summonerId"));
+    }
+
     use super::{
         SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_swap_landed,
         can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending, phase_left_secs,

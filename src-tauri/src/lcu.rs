@@ -798,21 +798,34 @@ impl LcuManager {
         self.send_unit(reqwest::Method::POST, "/riotclient/ux-minimize", None).await
     }
 
-    /// Swap with champion on ARAM bench
-    pub async fn swap_bench(&self, champion_id: i32) -> Result<(), String> {
+    /// Swap with champion on ARAM bench.
+    ///
+    /// Both arms carry `HTTP <status>` plus the response body, so a swap LCU
+    /// accepts but never applies can be diagnosed from the log.
+    pub async fn swap_bench(&self, champion_id: i32) -> Result<String, String> {
         let path = format!("/lol-champ-select/v1/session/bench/swap/{}", champion_id);
-        let res = self.send(reqwest::Method::POST, &path, None).await?;
-        if res.status().is_success() {
-            return Ok(());
+        let (status, reply) = self.send_with_reply(&path).await?;
+        if status.is_success() {
+            return Ok(reply);
         }
-        if res.status() == reqwest::StatusCode::NOT_FOUND {
+        if status == reqwest::StatusCode::NOT_FOUND {
             let fallback = format!(
                 "/lol-lobby-team-builder/champ-select/v1/session/bench/swap/{}",
                 champion_id
             );
-            return self.send_unit(reqwest::Method::POST, &fallback, None).await;
+            let (status, reply) = self.send_with_reply(&fallback).await?;
+            let reply = format!("（備用路徑）{}", reply);
+            return if status.is_success() { Ok(reply) } else { Err(reply) };
         }
-        Err(format!("HTTP error {}", res.status()))
+        Err(reply)
+    }
+
+    /// POST without a body; returns the status and `HTTP <status>, 回應：<body>`.
+    async fn send_with_reply(&self, path: &str) -> Result<(reqwest::StatusCode, String), String> {
+        let res = self.send(reqwest::Method::POST, path, None).await?;
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        Ok((status, format_http_reply(status.as_u16(), &body)))
     }
 
     /// Set our summoner spells (`spell1Id` = D, `spell2Id` = F) during champion select.
@@ -1243,6 +1256,20 @@ impl LcuManager {
     }
 }
 
+/// `HTTP 204, 回應：(空)`; long bodies are cut so one reply stays one log line.
+fn format_http_reply(status: u16, body: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    let body = body.trim();
+    let shown = if body.is_empty() {
+        "(空)".to_string()
+    } else if body.chars().count() > MAX_CHARS {
+        format!("{}…", body.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+        body.to_string()
+    };
+    format!("HTTP {}，回應：{}", status, shown)
+}
+
 /// Only broadcast the URIs the app handles, so noisy LCU telemetry/presence
 /// events never lag the channel or flood IPC. The summoner URI catches account
 /// switches while the LCU connection stays up (no reconnect, no status event);
@@ -1285,6 +1312,15 @@ fn scan_processes_named(sys: &mut System, matches: impl Fn(&str) -> bool) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_http_reply_marks_empty_and_cuts_long_bodies() {
+        assert_eq!(format_http_reply(204, ""), "HTTP 204，回應：(空)");
+        assert_eq!(format_http_reply(500, " {\"x\":1} "), "HTTP 500，回應：{\"x\":1}");
+        let long = "字".repeat(400);
+        assert!(format_http_reply(200, &long).ends_with('…'));
+        assert_eq!(format_http_reply(200, &long).chars().count(), "HTTP 200，回應：".chars().count() + 301);
+    }
 
     #[test]
     fn test_lobby_events_reach_the_auto_start_queue() {
