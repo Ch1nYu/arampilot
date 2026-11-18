@@ -1196,21 +1196,9 @@ impl LcuManager {
                                 && arr[0].as_i64() == Some(8)
                                 && let Ok(event) =
                                     serde_json::from_value::<LcuEvent>(arr[2].clone())
+                                && is_forwarded_event_uri(&event.uri)
                             {
-                                // Only broadcast the gameflow, ready-check, champ-select and
-                                // current-summoner URIs we actually use so noisy LCU telemetry/
-                                // presence events never lag the channel or flood IPC. The
-                                // summoner URI catches account switches that happen while the
-                                // LCU connection stays up (no reconnect, no status event).
-                                if matches!(
-                                    event.uri.as_str(),
-                                    "/lol-gameflow/v1/gameflow-phase"
-                                        | "/lol-matchmaking/v1/ready-check"
-                                        | "/lol-champ-select/v1/session"
-                                        | "/lol-summoner/v1/current-summoner"
-                                ) {
-                                    let _ = self.event_tx.send(event);
-                                }
+                                let _ = self.event_tx.send(event);
                             }
                         }
                         Ok(Message::Close(_)) => break,
@@ -1224,6 +1212,21 @@ impl LcuManager {
             }
         }
     }
+}
+
+/// Only broadcast the URIs the app handles, so noisy LCU telemetry/presence
+/// events never lag the channel or flood IPC. The summoner URI catches account
+/// switches while the LCU connection stays up (no reconnect, no status event);
+/// the lobby URI lets the auto start-queue notice the party coming back.
+fn is_forwarded_event_uri(uri: &str) -> bool {
+    matches!(
+        uri,
+        "/lol-gameflow/v1/gameflow-phase"
+            | "/lol-matchmaking/v1/ready-check"
+            | "/lol-champ-select/v1/session"
+            | "/lol-summoner/v1/current-summoner"
+            | "/lol-lobby/v2/lobby"
+    )
 }
 
 fn is_league_client_process(name: &str) -> bool {
@@ -1253,6 +1256,15 @@ fn scan_processes_named(sys: &mut System, matches: impl Fn(&str) -> bool) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_lobby_events_reach_the_auto_start_queue() {
+        // Without this the party coming back after a game never re-ran the
+        // auto start-queue check (2026-11-18 games).
+        assert!(is_forwarded_event_uri("/lol-lobby/v2/lobby"));
+        assert!(is_forwarded_event_uri("/lol-champ-select/v1/session"));
+        assert!(!is_forwarded_event_uri("/lol-chat/v1/conversations"));
+    }
 
     #[test]
     fn test_scan_loads_cmd_and_exe_only_for_matching_processes() {
