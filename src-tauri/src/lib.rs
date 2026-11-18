@@ -2261,21 +2261,37 @@ async fn try_auto_honor(
         targets
     };
 
+    let mut replies = Vec::new();
     for (summoner_id, puuid) in &targets {
-        if let Err(e) = lcu.honor_player(*summoner_id, puuid, game_id).await {
-            let _ = app.emit(
-                "lcu-log",
-                serde_json::json!({ "kind": "err", "title": "自動按讚失敗", "reason": e }),
-            );
-            return;
+        match lcu.honor_player(*summoner_id, puuid, game_id).await {
+            Ok(reply) => replies.push(reply),
+            Err(e) => {
+                let _ = app.emit(
+                    "lcu-log",
+                    serde_json::json!({ "kind": "err", "title": "自動按讚失敗", "reason": e }),
+                );
+                return;
+            }
         }
     }
+    // A 2xx alone did not prove the honor counted (2026-11-18: friends saw
+    // none), so read the ballot back and report what LCU recorded.
+    let recorded = lcu
+        .fetch_honor_ballot()
+        .await
+        .map(|b| postgame::honored_count(&b, &targets))
+        .map_or("讀不到按讚資料".to_string(), |n| format!("{}/{}", n, targets.len()));
     let _ = app.emit(
         "lcu-log",
         serde_json::json!({
             "kind": "act",
             "title": "已自動按讚組排隊友",
-            "reason": format!("按讚 {} 位組排隊友", targets.len()),
+            "reason": format!(
+                "按讚 {} 位組排隊友；LCU 已按名單 {}；回應：{}",
+                targets.len(),
+                recorded,
+                replies.join("／")
+            ),
         }),
     );
 }

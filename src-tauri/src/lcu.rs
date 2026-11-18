@@ -822,7 +822,15 @@ impl LcuManager {
 
     /// POST without a body; returns the status and `HTTP <status>, 回應：<body>`.
     async fn send_with_reply(&self, path: &str) -> Result<(reqwest::StatusCode, String), String> {
-        let res = self.send(reqwest::Method::POST, path, None).await?;
+        self.post_with_reply(path, None).await
+    }
+
+    async fn post_with_reply(
+        &self,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(reqwest::StatusCode, String), String> {
+        let res = self.send(reqwest::Method::POST, path, body).await?;
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         Ok((status, format_http_reply(status.as_u16(), &body)))
@@ -1108,7 +1116,7 @@ impl LcuManager {
         summoner_id: u64,
         puuid: &str,
         game_id: i64,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         self.ensure_connected().await?;
         let payload = serde_json::json!({
             "summonerId": summoner_id,
@@ -1116,12 +1124,11 @@ impl LcuManager {
             "honorType": "HEART",
             "gameId": game_id,
         });
-        self.send_unit(
-            reqwest::Method::POST,
-            "/lol-honor-v2/v1/honor-player",
-            Some(&payload),
-        )
-        .await
+        // Both arms carry `HTTP <status>` and the body, for the log.
+        let (status, reply) = self
+            .post_with_reply("/lol-honor-v2/v1/honor-player", Some(&payload))
+            .await?;
+        if status.is_success() { Ok(reply) } else { Err(reply) }
     }
 
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {

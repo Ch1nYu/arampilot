@@ -124,6 +124,20 @@ pub fn premade_puuids(gameflow_session: &serde_json::Value, own_puuid: &str) -> 
     Vec::new()
 }
 
+/// How many of `targets` the ballot lists in `honoredPlayers`.
+pub fn honored_count(ballot: &serde_json::Value, targets: &[(u64, String)]) -> usize {
+    let honored: Vec<&str> = ballot
+        .get("honoredPlayers")
+        .and_then(|v| v.as_array())
+        .map(|ps| {
+            ps.iter()
+                .filter_map(|p| p.get("recipientPuuid").and_then(|v| v.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    targets.iter().filter(|(_, p)| honored.contains(&p.as_str())).count()
+}
+
 /// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
 pub fn ballot_game_id(ballot: &serde_json::Value) -> Option<i64> {
     ballot.get("gameId").and_then(|v| v.as_i64())
@@ -378,6 +392,14 @@ mod tests {
         assert_eq!(bare.members, 0);
         assert!(bare.all_ready);
         assert!(bare.can_start);
+    }
+
+    #[test]
+    fn test_honored_count_reads_back_recorded_honors() {
+        let ballot = serde_json::json!({ "honoredPlayers": [{ "recipientPuuid": "f1", "honorType": "HEART" }] });
+        let targets = vec![(1u64, "f1".to_string()), (2u64, "f2".to_string())];
+        assert_eq!(honored_count(&ballot, &targets), 1);
+        assert_eq!(honored_count(&serde_json::json!({}), &targets), 0);
     }
 
     #[test]
