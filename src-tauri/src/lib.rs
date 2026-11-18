@@ -2007,6 +2007,26 @@ pub fn run() {
                             }
                             _ => {}
                         }
+
+                        // The client pops itself up again when champ select starts.
+                        if phase == "ChampSelect"
+                            && cfg.master_enabled
+                            && cfg.champ_select_minimize_client
+                            && mode_ok
+                        {
+                            let lcu_min: SharedLcu = Arc::clone(&lcu_for_worker);
+                            let app_min = app_h2.clone();
+                            spawn(async move {
+                                // Give the client a moment to finish raising its window.
+                                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                                if let Err(e) = lcu_min.minimize_client().await {
+                                    let _ = app_min.emit(
+                                        "lcu-log",
+                                        serde_json::json!({ "kind": "err", "title": "縮小用戶端失敗", "reason": e }),
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
             });

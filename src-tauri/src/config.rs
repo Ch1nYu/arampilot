@@ -183,6 +183,8 @@ pub struct AppConfig {
     pub accept_notify: String,     // "mute", "sound", "notification"
     /// Opt-in: minimize the League client again right after an auto accept.
     pub accept_minimize_client: bool,
+    /// Opt-in: minimize the League client again when champ select starts (it pops up there too).
+    pub champ_select_minimize_client: bool,
     /// Opt-in: skip the post-game stats screen and return to the lobby after a finished game.
     pub auto_play_again: bool,
     /// Opt-in: as party leader, start matchmaking once every party member is back in the lobby.
@@ -261,6 +263,7 @@ impl Default for AppConfig {
             accept_modes: vec!["ARAM".to_string(), "Mayhem".to_string()],
             accept_notify: "sound".to_string(),
             accept_minimize_client: false,
+            champ_select_minimize_client: false,
             auto_play_again: false,
             auto_start_queue: false,
             aram_settings: ModeSettings::default(),
@@ -1260,11 +1263,13 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(!cfg.auto_play_again);
         assert!(!cfg.accept_minimize_client);
+        assert!(!cfg.champ_select_minimize_client);
         assert!(!cfg.auto_start_queue);
         // A config written before these switches existed must load with them off.
         let legacy: AppConfig = serde_json::from_str(r#"{"auto_accept": true}"#).unwrap();
         assert!(!legacy.auto_play_again);
         assert!(!legacy.accept_minimize_client);
+        assert!(!legacy.champ_select_minimize_client);
         assert!(!legacy.auto_start_queue);
         assert!(legacy.auto_accept);
     }
