@@ -567,6 +567,26 @@ pub enum BenchSwapOutcome {
     Lost(PendingBenchSwap),
 }
 
+/// Whether a bench swap LCU accepted has shown up in a session snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BenchSwapCheck {
+    Landed,
+    /// Off the bench and not ours: nothing left to resend.
+    Lost,
+    /// Still on the bench and not ours: the request has not landed (yet).
+    NotLanded,
+}
+
+pub fn check_bench_swap(champ_id: i32, my_champ_id: i32, bench_champ_ids: &[i32]) -> BenchSwapCheck {
+    if my_champ_id == champ_id {
+        BenchSwapCheck::Landed
+    } else if bench_champ_ids.contains(&champ_id) {
+        BenchSwapCheck::NotLanded
+    } else {
+        BenchSwapCheck::Lost
+    }
+}
+
 /// Per-session timing of champ-select event handling, logged once when the session ends.
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct EventTiming {
@@ -766,6 +786,14 @@ impl ChampSelectSessionTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_check_bench_swap_reads_landed_lost_and_not_landed() {
+        assert_eq!(check_bench_swap(112, 112, &[42]), BenchSwapCheck::Landed);
+        // Accepted but ignored: still on the bench, we kept our champion (Viktor, 2026-11-18).
+        assert_eq!(check_bench_swap(112, 7, &[42, 112]), BenchSwapCheck::NotLanded);
+        assert_eq!(check_bench_swap(112, 7, &[42]), BenchSwapCheck::Lost);
+    }
 
     #[test]
     fn test_pending_bench_swap_resolves_from_the_live_session() {

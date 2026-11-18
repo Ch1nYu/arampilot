@@ -763,6 +763,15 @@ async fn abort_auto_bench_swap(
     );
 }
 
+/// Hand the bench back to new suggestions once an auto swap job has finished.
+async fn release_auto_bench_job(app: &tauri::AppHandle, tracker: &SharedTracker, champion_id: i32) {
+    let mut tr = tracker.lock().await;
+    if tr.bench_retry_target == Some(champion_id) {
+        tr.bench_retry_target = None;
+        emit_champ_select_state(app, &tr);
+    }
+}
+
 /// Opt-in automatic bench swap for one suggested champion.
 ///
 /// Waits out the same local 3s bench lock the manual snipe honours, then sends
@@ -816,8 +825,15 @@ async fn run_auto_bench_swap(
         ),
     );
 
-    // One initial attempt plus at most 3 retries.
-    for attempt in 0..4u32 {
+    // LCU sometimes accepts a swap that never lands (2026-11-17/18 games): check
+    // again after this long and resend while the champion is still on the bench.
+    const UNLANDED_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
+    const MAX_UNLANDED_RESENDS: u32 = 4;
+    let mut unlanded_resends = 0u32;
+
+    // One initial attempt plus at most 3 retries for failed requests.
+    let mut attempt = 0u32;
+    while attempt < 4 {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
         }
@@ -863,7 +879,8 @@ async fn run_auto_bench_swap(
         }
         if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
-            tr.bench_retry_target = None;
+            // `bench_retry_target` stays ours until the swap is checked below, so a
+            // new suggestion for the same champion does not start a second job.
             tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
             // as a bot swap and takes no manual hold.
@@ -889,7 +906,45 @@ async fn run_auto_bench_swap(
                     ),
                 );
             }
-            return;
+
+            tokio::time::sleep(UNLANDED_RECHECK).await;
+            let check = match lcu.fetch_champ_select_session().await {
+                Ok(session) => engine::check_bench_swap(
+                    champion_id,
+                    session_my_champ_id(&session),
+                    &session_bench_champion_ids(&session),
+                ),
+                // Left champ select: the session handler resets the tracker.
+                Err(_) => engine::BenchSwapCheck::Lost,
+            };
+            if check != engine::BenchSwapCheck::NotLanded {
+                // Landed or taken: the session handler logs the outcome.
+                release_auto_bench_job(&app, &tracker, champion_id).await;
+                return;
+            }
+            if unlanded_resends >= MAX_UNLANDED_RESENDS {
+                abort_auto_bench_swap(
+                    &app,
+                    &tracker,
+                    champion_id,
+                    "err",
+                    "自動換角已停止",
+                    &format!(
+                        "【{}】LCU 接受了 {} 次換角請求都沒換到，已停止",
+                        champ_name,
+                        unlanded_resends + 1
+                    ),
+                )
+                .await;
+                return;
+            }
+            unlanded_resends += 1;
+            // It may have left and come back in between: honour a fresh 3s lock.
+            if wait_for_bench_lock(&lcu, &tracker, champion_id).await.is_err() {
+                release_auto_bench_job(&app, &tracker, champion_id).await;
+                return;
+            }
+            continue;
         }
 
         // The swap failed. A teammate may have taken it meanwhile: confirm the
@@ -930,6 +985,7 @@ async fn run_auto_bench_swap(
                 tr.bot_expected_champ = None;
             }
         }
+        attempt += 1;
     }
 
     abort_auto_bench_swap(
