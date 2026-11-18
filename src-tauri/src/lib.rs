@@ -506,13 +506,18 @@ async fn apply_summoner_spells(
 
 /// The official client keeps a champion locked for 3s after it lands on the bench.
 const BENCH_LOCK_SECS: f64 = 3.0;
+/// LCU answers 204 to bench swaps early in BAN_PICK but applies none of them.
+/// Measured 2026-11-17/18 from the gameflow ChampSelect event: all 7 ignored
+/// swaps went out at +4..+14 s, every applied one at +15 s or later.
+const BENCH_OPENING_LOCK_SECS: f64 = 15.0;
 
 /// Seconds still to wait before a bench swap for a champion may be sent.
 ///
 /// The LCU bench swap endpoint does not enforce the 3s lock the official client
 /// applies, so it is enforced locally: no request may go out for a champion
-/// until `BENCH_LOCK_SECS` have passed since we first saw it on the bench. In
-/// the FINALIZATION phase the phase clock is an additional lower bound.
+/// until `BENCH_LOCK_SECS` have passed since we first saw it on the bench. The
+/// phase clock is an additional lower bound: `BENCH_LOCK_SECS` into
+/// FINALIZATION and `BENCH_OPENING_LOCK_SECS` into BAN_PICK.
 fn bench_lock_remaining_secs(
     seen_elapsed: Option<f64>,
     phase: &str,
@@ -520,13 +525,14 @@ fn bench_lock_remaining_secs(
 ) -> f64 {
     // Never seen on the bench: be conservative and wait the full lock.
     let from_seen = seen_elapsed.map_or(BENCH_LOCK_SECS, |e| (BENCH_LOCK_SECS - e).max(0.0));
-    let from_phase = if phase == "FINALIZATION" {
-        phase_elapsed_secs
-            .map(|e| (BENCH_LOCK_SECS - e).max(0.0))
-            .unwrap_or(0.0)
-    } else {
-        0.0
+    let phase_floor = match phase {
+        "FINALIZATION" => BENCH_LOCK_SECS,
+        "BAN_PICK" => BENCH_OPENING_LOCK_SECS,
+        _ => 0.0,
     };
+    let from_phase = phase_elapsed_secs
+        .map(|e| (phase_floor - e).max(0.0))
+        .unwrap_or(0.0);
     from_seen.max(from_phase)
 }
 
@@ -3691,6 +3697,9 @@ mod tests {
         assert_eq!(bench_lock_remaining_secs(Some(3.0), "BAN_PICK", None), 0.0);
         // Never seen: be conservative and wait the whole lock.
         assert_eq!(bench_lock_remaining_secs(None, "BAN_PICK", None), 3.0);
+        // Opening of BAN_PICK: LCU ignores swaps before ~15 s (2026-11-18 games).
+        assert_eq!(bench_lock_remaining_secs(Some(5.0), "BAN_PICK", Some(9.0)), 6.0);
+        assert_eq!(bench_lock_remaining_secs(Some(5.0), "BAN_PICK", Some(16.0)), 0.0);
         // FINALIZATION keeps the phase clock as a lower bound: seen 10s ago but
         // the phase only started 1s ago => 2s left.
         let remaining = bench_lock_remaining_secs(Some(10.0), "FINALIZATION", Some(1.0));
