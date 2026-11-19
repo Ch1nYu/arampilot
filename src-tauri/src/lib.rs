@@ -2247,49 +2247,70 @@ async fn try_auto_honor(
     let Some(game_id) = postgame::ballot_game_id(&ballot) else {
         return;
     };
-    let targets = {
-        let mut tr = tracker_lock.lock().await;
+    let (wanted, party, own) = {
+        let tr = tracker_lock.lock().await;
         if tr.honored_game_id == Some(game_id) {
             return;
         }
-        let targets = postgame::honor_targets(&ballot, &tr.party_puuids, tr.own_puuid.as_deref());
-        if targets.is_empty() {
-            return;
-        }
-        // Record before any await: a later phase event must not honor again.
-        tr.honored_game_id = Some(game_id);
-        targets
+        let wanted = postgame::honor_targets(&ballot, &tr.party_puuids, tr.own_puuid.as_deref());
+        (wanted, tr.party_puuids.clone(), tr.own_puuid.clone())
     };
+    if wanted.is_empty() {
+        return;
+    }
 
-    let mut replies = Vec::new();
-    for (summoner_id, puuid) in &targets {
-        match lcu.honor_player(*summoner_id, puuid, game_id).await {
-            Ok(reply) => replies.push(reply),
-            Err(e) => {
-                let _ = app.emit(
-                    "lcu-log",
-                    serde_json::json!({ "kind": "err", "title": "自動按讚失敗", "reason": e }),
-                );
-                return;
+    // Right after the game the honor server can still be unreachable
+    // (2026-11-19: every POST answered 200 "failed_to_contact_honor_server"
+    // and the ballot read back 0/3). Only the ballot read-back proves an
+    // honor counted, so retry until it does. Phase events are handled in
+    // order on this thread, so play-again waits for this loop to finish.
+    let mut ballot = ballot;
+    let mut replies: Vec<String> = Vec::new();
+    let mut attempt = 1;
+    let (recorded, outcome) = loop {
+        let pending = postgame::honor_targets(&ballot, &party, own.as_deref());
+        for (summoner_id, puuid) in pending.iter().filter(|t| wanted.contains(t)) {
+            match lcu.honor_player(*summoner_id, puuid, game_id).await {
+                Ok(reply) | Err(reply) => replies.push(reply),
             }
         }
-    }
-    // A 2xx alone did not prove the honor counted (2026-11-18: friends saw
-    // none), so read the ballot back and report what LCU recorded.
-    let recorded = lcu
-        .fetch_honor_ballot()
-        .await
-        .map(|b| postgame::honored_count(&b, &targets))
-        .map_or("讀不到按讚資料".to_string(), |n| format!("{}/{}", n, targets.len()));
+        let after = lcu.fetch_honor_ballot().await;
+        let recorded = after.as_ref().map(|b| postgame::honored_count(b, &wanted));
+        let outcome = postgame::honor_outcome(
+            recorded,
+            wanted.len(),
+            attempt,
+            postgame::HONOR_MAX_ATTEMPTS,
+        );
+        match (outcome, after) {
+            (postgame::HonorOutcome::Retry, Some(b)) => {
+                ballot = b;
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(postgame::HONOR_RETRY_MS))
+                    .await;
+            }
+            (outcome, _) => break (recorded, outcome),
+        }
+    };
+    tracker_lock.lock().await.honored_game_id = Some(game_id);
+
+    let recorded_text = recorded
+        .map_or("讀不到按讚資料".to_string(), |n| format!("{}/{}", n, wanted.len()));
+    let (kind, title) = if outcome == postgame::HonorOutcome::Done {
+        ("act", "已自動按讚組排隊友")
+    } else {
+        ("err", "自動按讚沒有成功")
+    };
     let _ = app.emit(
         "lcu-log",
         serde_json::json!({
-            "kind": "act",
-            "title": "已自動按讚組排隊友",
+            "kind": kind,
+            "title": title,
             "reason": format!(
-                "按讚 {} 位組排隊友；LCU 已按名單 {}；回應：{}",
-                targets.len(),
-                recorded,
+                "按讚 {} 位組排隊友，試了 {} 次；LCU 已按名單 {}；回應：{}",
+                wanted.len(),
+                attempt,
+                recorded_text,
                 replies.join("／")
             ),
         }),

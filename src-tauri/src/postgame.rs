@@ -138,6 +138,36 @@ pub fn honored_count(ballot: &serde_json::Value, targets: &[(u64, String)]) -> u
     targets.iter().filter(|(_, p)| honored.contains(&p.as_str())).count()
 }
 
+/// Honor rounds tried before giving up, and the pause between them.
+pub const HONOR_MAX_ATTEMPTS: u32 = 5;
+pub const HONOR_RETRY_MS: u64 = 2000;
+
+/// What to do after an honor round, judged by the ballot read-back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HonorOutcome {
+    /// Every wanted honor is on the ballot.
+    Done,
+    /// Some are missing; send them again.
+    Retry,
+    /// Out of attempts, or the ballot is gone (play-again reset it).
+    GiveUp,
+}
+
+/// `recorded` is how many wanted honors the ballot lists, `None` when the
+/// ballot could not be read. A 2xx reply alone never counts as done.
+pub fn honor_outcome(
+    recorded: Option<usize>,
+    wanted: usize,
+    attempt: u32,
+    max_attempts: u32,
+) -> HonorOutcome {
+    match recorded {
+        Some(n) if n >= wanted => HonorOutcome::Done,
+        Some(_) if attempt < max_attempts => HonorOutcome::Retry,
+        _ => HonorOutcome::GiveUp,
+    }
+}
+
 /// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
 pub fn ballot_game_id(ballot: &serde_json::Value) -> Option<i64> {
     ballot.get("gameId").and_then(|v| v.as_i64())
@@ -392,6 +422,18 @@ mod tests {
         assert_eq!(bare.members, 0);
         assert!(bare.all_ready);
         assert!(bare.can_start);
+    }
+
+    #[test]
+    fn test_unreachable_honor_server_is_retried_not_counted() {
+        // 2026-11-19: all replies were 200 "failed_to_contact_honor_server",
+        // the ballot read back 0/3. That must retry, not end the honor.
+        let max = HONOR_MAX_ATTEMPTS;
+        assert_eq!(honor_outcome(Some(0), 3, 1, max), HonorOutcome::Retry);
+        assert_eq!(honor_outcome(Some(2), 3, 2, max), HonorOutcome::Retry);
+        assert_eq!(honor_outcome(Some(3), 3, 2, max), HonorOutcome::Done);
+        assert_eq!(honor_outcome(Some(0), 3, max, max), HonorOutcome::GiveUp);
+        assert_eq!(honor_outcome(None, 3, 1, max), HonorOutcome::GiveUp);
     }
 
     #[test]
