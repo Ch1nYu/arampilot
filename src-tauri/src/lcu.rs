@@ -1118,6 +1118,15 @@ impl LcuManager {
         game_id: i64,
     ) -> Result<String, String> {
         self.ensure_connected().await?;
+        // Clients with `honorEndpointsV2Enabled` (2026-11) only record honors
+        // sent here; the legacy endpoint below answers 200
+        // "failed_to_contact_honor_server". Fall back to it only when this
+        // endpoint is missing (an older client).
+        let v3 = serde_json::json!({ "recipientPuuid": puuid, "honorType": "HEART" });
+        let (status, reply) = self.post_with_reply("/lol-honor/v1/honor", Some(&v3)).await?;
+        if status != reqwest::StatusCode::NOT_FOUND {
+            return if status.is_success() { Ok(reply) } else { Err(reply) };
+        }
         let payload = serde_json::json!({
             "summonerId": summoner_id,
             "puuid": puuid,
