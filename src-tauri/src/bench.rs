@@ -349,21 +349,29 @@ pub(crate) async fn run_auto_bench_swap(
         }
         if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
-            // The bench job stays ours until the swap is checked below, so a
-            // new suggestion for the same champion does not start a second job.
-            tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
             // as a bot swap and takes no manual hold.
             // LCU accepting the request does not mean we got the champion (a
             // teammate may be faster): the next sessions settle and log it.
             let ignored = tr.record_bench_swap_sent(champion_id, unlocked_at, attempt);
-            tr.last_bench_verdict = Some(format!("已送出換角請求 (ID: {})，等待確認", champion_id));
-            emit_champ_select_state(&app, &tr);
+            // The bench job stays ours until the swap is checked below, so a
+            // new suggestion for the same champion does not start a second job.
+            // A reply that arrives after the job ended (the WS event already
+            // showed the swap) must not wipe the next suggestion.
+            let still_ours = tr.bench_job.owned_by(token);
+            if still_ours {
+                tr.bench_suggest_target = None;
+                tr.last_bench_verdict =
+                    Some(format!("已送出換角請求 (ID: {})，等待確認", champion_id));
+                emit_champ_select_state(&app, &tr);
+            }
             drop(tr);
-            emit_lcu_assist(
-                &app,
-                serde_json::json!({ "kind": "clear", "target": "bench" }),
-            );
+            if still_ours {
+                emit_lcu_assist(
+                    &app,
+                    serde_json::json!({ "kind": "clear", "target": "bench" }),
+                );
+            }
             if let Some(previous) = ignored {
                 emit_bench_diag(
                     &app,
@@ -675,14 +683,16 @@ pub(crate) async fn swap_bench_champion(
         );
 
         while started_at.elapsed() < max_elapsed && attempts < max_attempts {
-            // 1. Cheap in-memory guards: a newer snipe or a takeover ends this loop.
-            {
-                let tr = tracker_retry.lock().await;
+            // 1. Cheap in-memory guards and marking the coming change as ours,
+            //    in one lock hold so a newer snipe cannot slip in between.
+            let already_ours = {
+                let mut tr = tracker_retry.lock().await;
                 if !tr.bench_job.owned_by(token) {
                     // The session already showed the champion landing (that ends
-                    // the job): record the success instead of ending silently.
-                    // Any other job owning the bench is a newer snipe: leave it.
-                    let landed = tr.bench_job == BenchJob::Idle && tr.my_champ_id == champion_id;
+                    // the job, and no job has started since): record the success
+                    // instead of ending silently. Otherwise a newer job owns the
+                    // bench: leave it.
+                    let landed = tr.is_latest_bench_job(token) && tr.my_champ_id == champion_id;
                     drop(tr);
                     if landed {
                         finish_manual_bench_snipe(
@@ -696,10 +706,13 @@ pub(crate) async fn swap_bench_champion(
                     }
                     return;
                 }
-            }
-
-            // 2. The WebSocket event may have already granted us the champion.
-            let already_ours = tracker_retry.lock().await.my_champ_id == champion_id;
+                // 2. The WebSocket event may have already granted us the champion.
+                let ours = tr.my_champ_id == champion_id;
+                if !ours {
+                    tr.bot_expected_champ = Some(champion_id);
+                }
+                ours
+            };
             if already_ours {
                 finish_manual_bench_snipe(
                     &app_retry,
@@ -716,10 +729,6 @@ pub(crate) async fn swap_bench_champion(
             //    round trip on a pre-flight GET. LCU accepting the request does
             //    not mean we got the champion (a faster teammate may), so the
             //    session afterwards decides either way.
-            {
-                let mut tr = tracker_retry.lock().await;
-                tr.bot_expected_champ = Some(champion_id);
-            }
             let accepted = lcu_retry.swap_bench(champion_id).await.is_ok();
 
             let Ok(session) = lcu_retry.fetch_champ_select_session().await else {
