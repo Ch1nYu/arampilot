@@ -399,10 +399,23 @@ pub(crate) async fn run_auto_bench_swap(
             if check == engine::BenchSwapCheck::NotLanded
                 && let Some(session) = &session
             {
+                // 2026-11-20: Quinn (not owned) never landed in 12 accepted
+                // requests well past the opening window. Record whether LCU
+                // lists the target as pickable, to test the ownership guess.
+                let pickable = match lcu.fetch_pickable_champion_ids().await {
+                    Some(ids) if ids.contains(&champion_id) => "是",
+                    Some(_) => "否",
+                    None => "讀不到",
+                };
                 emit_bench_diag(
                     &app,
                     "沒換到時的選角狀態",
-                    format!("【{}】{}", champ_name, bench_swap_debug(session, champion_id)),
+                    format!(
+                        "【{}】{}、可選清單有它：{}",
+                        champ_name,
+                        bench_swap_debug(session, champion_id),
+                        pickable
+                    ),
                 );
             }
             if check != engine::BenchSwapCheck::NotLanded {
@@ -411,6 +424,9 @@ pub(crate) async fn run_auto_bench_swap(
                 return;
             }
             if unlanded_resends >= MAX_UNLANDED_RESENDS {
+                // Without this the next snapshot suggests it again and starts
+                // a new job (2026-11-20: Quinn resent 7 more times after 已停止).
+                tracker.lock().await.bench_given_up.insert(champion_id);
                 abort_auto_bench_swap(
                     &app,
                     &tracker,
@@ -419,7 +435,7 @@ pub(crate) async fn run_auto_bench_swap(
                     "err",
                     "自動換角已停止",
                     &format!(
-                        "【{}】LCU 接受了 {} 次換角請求都沒換到，已停止",
+                        "【{}】LCU 接受了 {} 次換角請求都沒換到，本場不再自動換它",
                         champ_name,
                         unlanded_resends + 1
                     ),

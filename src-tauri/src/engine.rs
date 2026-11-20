@@ -558,6 +558,9 @@ pub struct ChampSelectSessionTracker {
     pub event_timing: EventTiming,
     /// An auto bench swap LCU accepted but the session has not shown yet.
     pub pending_bench_swap: Option<PendingBenchSwap>,
+    /// Champions auto bench gave up on this session after LCU kept accepting
+    /// swaps that never landed; they are left out of auto suggestions.
+    pub bench_given_up: HashSet<i32>,
 }
 
 /// Who owns the bench in this champ select: at most one swap job at a time.
@@ -739,6 +742,7 @@ impl ChampSelectSessionTracker {
         self.prev_bot_set_spells = None;
         self.event_timing = EventTiming::default();
         self.pending_bench_swap = None;
+        self.bench_given_up.clear();
     }
 
     fn next_bench_token(&mut self) -> u64 {
@@ -777,6 +781,15 @@ impl ChampSelectSessionTracker {
     /// that lost the bench to its own landing, not to a newer job.
     pub fn is_latest_bench_job(&self, token: u64) -> bool {
         self.bench_job_tokens == token
+    }
+
+    /// Bench champions auto suggestions may consider: all but those given up on.
+    pub fn bench_candidates(&self, bench_champ_ids: &[i32]) -> Vec<i32> {
+        bench_champ_ids
+            .iter()
+            .copied()
+            .filter(|id| !self.bench_given_up.contains(id))
+            .collect()
     }
 
     /// Release the bench if `token` still owns it; true when it did.
@@ -1185,6 +1198,15 @@ mod tests {
         tr.observe_champion_change(1, 7);
         assert_eq!(tr.manual_bench_hold, None);
         assert_eq!(tr.bench_job, BenchJob::Idle);
+    }
+
+    #[test]
+    fn test_given_up_bench_champion_is_not_suggested_again_this_session() {
+        let mut tr = ChampSelectSessionTracker::default();
+        tr.bench_given_up.insert(133);
+        assert_eq!(tr.bench_candidates(&[133, 7, 9]), vec![7, 9]);
+        tr.reset();
+        assert_eq!(tr.bench_candidates(&[133, 7]), vec![133, 7], "a new session tries again");
     }
 
     #[test]

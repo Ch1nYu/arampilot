@@ -798,6 +798,22 @@ impl LcuManager {
         self.send_unit(reqwest::Method::POST, "/riotclient/ux-minimize", None).await
     }
 
+    /// Champions the local player may play in this champ select
+    /// (`/lol-champ-select/v1/pickable-champion-ids`); `None` when LCU has none.
+    pub async fn fetch_pickable_champion_ids(&self) -> Option<Vec<i32>> {
+        let value = self
+            .get_json_opt("/lol-champ-select/v1/pickable-champion-ids")
+            .await?;
+        Some(
+            value
+                .as_array()?
+                .iter()
+                .filter_map(|v| v.as_i64())
+                .map(|id| id as i32)
+                .collect(),
+        )
+    }
+
     /// Swap with champion on ARAM bench.
     ///
     /// Both arms carry `HTTP <status>` plus the response body, so a swap LCU

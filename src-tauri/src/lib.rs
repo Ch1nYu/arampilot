@@ -2477,7 +2477,7 @@ async fn handle_champ_select_event(
         let remaining_sec = remaining_phase_secs(data).filter(|&s| s >= 0).unwrap_or(35);
         let decision = ChampSelectRuleEngine::evaluate_bench(
             my_champ_id,
-            &bench_champs,
+            &tr.bench_candidates(&bench_champs),
             profile,
             settings,
             remaining_sec,
