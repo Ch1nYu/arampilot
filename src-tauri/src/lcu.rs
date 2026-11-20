@@ -1140,6 +1140,15 @@ impl LcuManager {
         if status.is_success() { Ok(reply) } else { Err(reply) }
     }
 
+    /// Submit the post-game ballot, which ends the honor screen. The client
+    /// only submits on its own once every vote is spent; with votes left
+    /// over (more votes than party allies) it waits for the player.
+    pub async fn submit_honor_ballot(&self) -> Result<String, String> {
+        self.ensure_connected().await?;
+        let (status, reply) = self.post_with_reply("/lol-honor/v1/ballot", None).await?;
+        if status.is_success() { Ok(reply) } else { Err(reply) }
+    }
+
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {
         let path = format!("/lol-chat/v1/conversations/{}/messages", chat_id);
         let payload = serde_json::json!({

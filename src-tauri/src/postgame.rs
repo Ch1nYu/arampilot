@@ -168,6 +168,22 @@ pub fn honor_outcome(
     }
 }
 
+/// Votes the ballot offers; 0 when it carries no vote pool.
+pub fn ballot_votes(ballot: &serde_json::Value) -> u64 {
+    ballot
+        .get("votePool")
+        .and_then(|v| v.get("votes"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+/// Whether the app must submit the ballot itself after honoring `honored`
+/// allies out of `votes`. The client leaves the honor screen on its own only
+/// when every vote is spent, so leftover votes would stall the post-game flow.
+pub fn ballot_needs_submit(votes: u64, honored: usize) -> bool {
+    votes > honored as u64
+}
+
 /// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
 pub fn ballot_game_id(ballot: &serde_json::Value) -> Option<i64> {
     ballot.get("gameId").and_then(|v| v.as_i64())
@@ -434,6 +450,16 @@ mod tests {
         assert_eq!(honor_outcome(Some(3), 3, 2, max), HonorOutcome::Done);
         assert_eq!(honor_outcome(Some(0), 3, max, max), HonorOutcome::GiveUp);
         assert_eq!(honor_outcome(None, 3, 1, max), HonorOutcome::GiveUp);
+    }
+
+    #[test]
+    fn test_leftover_votes_need_a_ballot_submit() {
+        // 2026-11-20: 3 votes, 2 premade allies honored, the client stayed on
+        // the honor screen. Exactly spent votes move on by themselves.
+        assert!(ballot_needs_submit(3, 2));
+        assert!(!ballot_needs_submit(2, 2));
+        assert_eq!(ballot_votes(&ballot_payload(3, &[], &[])), 3);
+        assert_eq!(ballot_votes(&serde_json::json!({})), 0);
     }
 
     #[test]
