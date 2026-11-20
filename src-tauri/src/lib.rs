@@ -2514,7 +2514,7 @@ async fn handle_champ_select_event(
                         app_handle,
                         "改追",
                         format!(
-                            "【{}】還沒送出，改追分數更高的【{}】（+{}）",
+                            "【{}】還沒送出，改追【{}】（+{}）",
                             name_of(busy),
                             name_of(target_champ_id),
                             diff

@@ -359,19 +359,19 @@ pub(crate) async fn run_auto_bench_swap(
             // A reply that arrives after the job ended (the WS event already
             // showed the swap) must not wipe the next suggestion.
             let still_ours = tr.bench_job.owned_by(token);
+            // Emit under the same lock hold, so a newer suggestion cannot be
+            // published in between and then cleared by this reply.
             if still_ours {
                 tr.bench_suggest_target = None;
                 tr.last_bench_verdict =
                     Some(format!("已送出換角請求 (ID: {})，等待確認", champion_id));
                 emit_champ_select_state(&app, &tr);
-            }
-            drop(tr);
-            if still_ours {
                 emit_lcu_assist(
                     &app,
                     serde_json::json!({ "kind": "clear", "target": "bench" }),
                 );
             }
+            drop(tr);
             if let Some(previous) = ignored {
                 emit_bench_diag(
                     &app,
@@ -574,6 +574,10 @@ pub(crate) async fn finish_manual_bench_snipe(
     reason: String,
 ) {
     let mut tr = tracker.lock().await;
+    // A newer job started since this snipe: it reports its own result.
+    if !tr.is_latest_bench_job(token) {
+        return;
+    }
     tr.finish_bench_job(token);
     tr.manual_bench_hold = Some(champion_id);
     tr.bot_expected_champ = None;
