@@ -304,6 +304,26 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Remember `spell_id` as the champion's secondary spell in both shared
+    /// profiles. Matching the mode default clears the memory instead, like a
+    /// click on the overview spell chip. Returns whether anything changed.
+    pub fn remember_secondary_spell(&mut self, champ_id: i32, spell_id: i32) -> bool {
+        let stored = (spell_id != self.aram_settings.default_secondary_spell).then_some(spell_id);
+        let mut changed = false;
+        for item in self
+            .aram_profile
+            .iter_mut()
+            .chain(self.mayhem_profile.iter_mut())
+            .filter(|c| c.id == champ_id)
+        {
+            if item.secondary_spell != stored {
+                item.secondary_spell = stored;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Settings to run on when the user's file exists but cannot be loaded:
     /// defaults with every automation off, so nothing the user never chose
     /// acts on their matches (they can still switch it on for this run).
@@ -1225,6 +1245,25 @@ mod tests {
             matches: None,
             secondary_spell: None,
         }
+    }
+
+    #[test]
+    fn test_remember_secondary_spell_updates_both_profiles() {
+        let mut cfg = AppConfig {
+            aram_profile: vec![profile_item(7), profile_item(9)],
+            mayhem_profile: vec![profile_item(7)],
+            ..AppConfig::default()
+        };
+        assert_eq!(cfg.aram_settings.default_secondary_spell, 6);
+        assert!(cfg.remember_secondary_spell(7, 32));
+        assert_eq!(cfg.aram_profile[0].secondary_spell, Some(32));
+        assert_eq!(cfg.mayhem_profile[0].secondary_spell, Some(32));
+        assert_eq!(cfg.aram_profile[1].secondary_spell, None, "other champions untouched");
+        assert!(!cfg.remember_secondary_spell(7, 32), "same spell again changes nothing");
+        // Picking the mode default again drops the memory.
+        assert!(cfg.remember_secondary_spell(7, 6));
+        assert_eq!(cfg.aram_profile[0].secondary_spell, None);
+        assert!(!cfg.remember_secondary_spell(42, 32), "unknown champion");
     }
 
     fn ids(profile: &[ChampionProfileItem]) -> Vec<i32> {

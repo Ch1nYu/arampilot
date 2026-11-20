@@ -219,6 +219,55 @@ pub fn is_mayhem_queue(queue_id: Option<i32>) -> bool {
     matches!(queue_id, Some(2400 | 2410 | 3270))
 }
 
+/// Whether champ select came from matchmaking (ARAM, clash, Mayhem), not a custom lobby.
+fn is_matchmade_queue(raw_session_queue_id: Option<i64>) -> bool {
+    matches!(raw_session_queue_id, Some(450 | 720 | 721 | 2400 | 2410))
+}
+
+/// Remember a secondary spell the player picked in the client, save it, and
+/// push the new config to the UI so its own next save keeps it.
+async fn remember_client_spell(
+    app: tauri::AppHandle,
+    config_lock: SharedConfig,
+    champ_id: i32,
+    spell_id: i32,
+) {
+    let mut live = config_lock.write().await;
+    if !live.remember_secondary_spell(champ_id, spell_id) {
+        return;
+    }
+    let champ_name = live
+        .aram_profile
+        .iter()
+        .find(|c| c.id == champ_id)
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| format!("ID:{}", champ_id));
+    let is_default = spell_id == live.aram_settings.default_secondary_spell;
+    // Write before releasing the lock, as the tray toggles do.
+    let snapshot = live.clone();
+    let saved = ConfigManager::new().save(&snapshot);
+    drop(live);
+    let (kind, title, reason) = match saved {
+        Ok(_) if is_default => (
+            "act",
+            "已記住英雄副技能",
+            format!("【{}】改回預設副技能 {}", champ_name, engine::spell_name(spell_id)),
+        ),
+        Ok(_) => (
+            "act",
+            "已記住英雄副技能",
+            format!("【{}】下次自動帶 {}", champ_name, engine::spell_name(spell_id)),
+        ),
+        Err(err) => (
+            "err",
+            "英雄副技能未儲存",
+            format!("【{}】{} 本次執行已記住，但沒有寫入設定檔：{}", champ_name, engine::spell_name(spell_id), err),
+        ),
+    };
+    let _ = app.emit("lcu-log", serde_json::json!({ "kind": kind, "title": title, "reason": reason }));
+    let _ = app.emit("config-updated", &snapshot);
+}
+
 /// Whether a queue ID belongs to ARAM (standard 450, clash 720/721, bot 860, custom 3200/3210/3220/3230).
 pub fn is_aram_queue(queue_id: Option<i32>) -> bool {
     matches!(
@@ -2122,6 +2171,22 @@ async fn handle_champ_select_event(
     if tr.observe_client_spells(current_client_spells)
         && let Some((s1, s2)) = current_client_spells
     {
+        // With spell memory on, a change made in the client is remembered for
+        // this champion like a click on the overview chip. Custom lobbies
+        // (session `queueId` -1) are often set up for others: never learn there.
+        let raw_queue_id = data.get("queueId").and_then(|v| v.as_i64());
+        if config.remember_champion_spells
+            && my_champ_id > 0
+            && is_matchmade_queue(raw_queue_id)
+            && let Some(spell_id) = engine::learned_secondary_spell((s1, s2))
+        {
+            spawn(remember_client_spell(
+                app_handle.clone(),
+                Arc::clone(config_lock),
+                my_champ_id,
+                spell_id,
+            ));
+        }
         let _ = app_handle.emit(
             "lcu-log",
             serde_json::json!({

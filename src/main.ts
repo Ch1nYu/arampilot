@@ -257,7 +257,7 @@ function renderSpellOverrideCount() {
     .filter((c) => isSupportedSecondarySpell(c.secSpell))
     .sort((a, b) => a.n.localeCompare(b.n, "zh-Hant"));
   el.textContent =
-    remembered.length > 0 ? `已記住 ${remembered.length} 位英雄` : "還沒有記住任何英雄（在總覽選角時點副技能就會記住）";
+    remembered.length > 0 ? `已記住 ${remembered.length} 位英雄` : "還沒有記住任何英雄（選角時在總覽或 LoL 用戶端改副技能就會記住）";
   const toggle = document.getElementById("btnToggleSpellMemList");
   const reset = document.getElementById("btnResetSpellOverrides") as HTMLButtonElement | null;
   const listEl = document.getElementById("spellMemList");

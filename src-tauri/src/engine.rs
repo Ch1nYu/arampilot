@@ -104,6 +104,19 @@ pub fn resolve_summoner_spells(
     }
 }
 
+/// The secondary spell a manual change in the client picked: the non-Flash one
+/// of the pair, when Flash is one of the two and the other is a supported spell.
+pub fn learned_secondary_spell((spell1_id, spell2_id): (i32, i32)) -> Option<i32> {
+    let other = if spell1_id == FLASH_SPELL_ID {
+        spell2_id
+    } else if spell2_id == FLASH_SPELL_ID {
+        spell1_id
+    } else {
+        return None;
+    };
+    SECONDARY_SPELL_IDS.contains(&other).then_some(other)
+}
+
 /// Calculate 0~100 scores for champions based on tier and relative order within tier
 pub fn calculate_champion_scores(profile: &[ChampionProfileItem]) -> HashMap<i32, i32> {
     let mut scores = HashMap::new();
@@ -1183,6 +1196,15 @@ mod tests {
         let new = tr.start_auto_bench(7);
         assert_ne!(old, new);
         assert!(!tr.finish_bench_job(old), "a loop from the last session must not release the new job");
+    }
+
+    #[test]
+    fn test_learned_secondary_spell_is_the_non_flash_one() {
+        assert_eq!(learned_secondary_spell((4, 32)), Some(32));
+        assert_eq!(learned_secondary_spell((32, 4)), Some(32), "Flash on F still counts");
+        assert_eq!(learned_secondary_spell((6, 32)), None, "no Flash: nothing to learn");
+        assert_eq!(learned_secondary_spell((4, 4)), None);
+        assert_eq!(learned_secondary_spell((4, 999)), None);
     }
 
     fn sample_profile() -> Vec<ChampionProfileItem> {
