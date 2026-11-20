@@ -10,7 +10,7 @@ pub mod single_instance;
 
 use config::{AppConfig, ConfigManager, SaveError};
 use engine::{
-    BenchDecision, CardDecision, ChampSelectRuleEngine, ChampSelectSessionTracker, TradeDecision,
+    BenchDecision, BenchJob, CardDecision, ChampSelectRuleEngine, ChampSelectSessionTracker, TradeDecision,
 };
 use lcu::{ChampionItem, ConnectionStatus, LcuManager};
 use livegame::LiveGamePoller;
@@ -119,7 +119,7 @@ pub struct ChampSelectUiState {
 fn champ_select_ui_state(tr: &ChampSelectSessionTracker) -> ChampSelectUiState {
     ChampSelectUiState {
         manual_hold_champ_id: tr.manual_bench_hold,
-        bench_retry_target: tr.bench_retry_target,
+        bench_retry_target: tr.bench_job.champ_id(),
         bench_verdict: tr.last_bench_verdict.clone(),
         trade_verdict: tr.last_trade_verdict.clone(),
         allied_puuids: tr.allied_puuids.iter().cloned().collect(),
@@ -704,7 +704,7 @@ async fn wait_for_bench_lock(
     lcu: &SharedLcu,
     tracker: &SharedTracker,
     champion_id: i32,
-    retargetable: bool,
+    token: u64,
 ) -> Result<(), BenchWaitError> {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
     loop {
@@ -717,7 +717,7 @@ async fn wait_for_bench_lock(
         let phase_left = phase_left_secs(&session);
         let (seen_elapsed, phase, phase_elapsed_secs) = {
             let mut tr = tracker.lock().await;
-            if retargetable && tr.bench_retry_target != Some(champion_id) {
+            if !tr.bench_job.owned_by(token) {
                 return Err(BenchWaitError::Retargeted);
             }
             if on_bench {
@@ -777,14 +777,13 @@ async fn abort_auto_bench_swap(
     app: &tauri::AppHandle,
     tracker: &SharedTracker,
     champion_id: i32,
+    token: u64,
     kind: &str,
     title: &str,
     reason: &str,
 ) {
     let mut tr = tracker.lock().await;
-    if tr.bench_retry_target == Some(champion_id) {
-        tr.bench_retry_target = None;
-    }
+    tr.finish_bench_job(token);
     if tr.bot_expected_champ == Some(champion_id) {
         tr.bot_expected_champ = None;
     }
@@ -801,10 +800,9 @@ async fn abort_auto_bench_swap(
 }
 
 /// Hand the bench back to new suggestions once an auto swap job has finished.
-async fn release_auto_bench_job(app: &tauri::AppHandle, tracker: &SharedTracker, champion_id: i32) {
+async fn release_auto_bench_job(app: &tauri::AppHandle, tracker: &SharedTracker, token: u64) {
     let mut tr = tracker.lock().await;
-    if tr.bench_retry_target == Some(champion_id) {
-        tr.bench_retry_target = None;
+    if tr.finish_bench_job(token) {
         emit_champ_select_state(app, &tr);
     }
 }
@@ -819,20 +817,21 @@ async fn run_auto_bench_swap(
     lcu: SharedLcu,
     tracker: SharedTracker,
     champion_id: i32,
+    token: u64,
     champ_name: String,
     retry_ms: u64,
 ) {
-    if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id, true).await {
+    if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id, token).await {
         match e {
             // The new job owns the bench now; leave the tracker to it.
             BenchWaitError::Retargeted => {}
             BenchWaitError::LeftBench => {
                 let reason = format!("【{}】還在 3 秒鎖內就被隊友換走，改找下一個順位", champ_name);
-                abort_auto_bench_swap(&app, &tracker, champion_id, "skip", "沒換到板凳英雄", &reason)
+                abort_auto_bench_swap(&app, &tracker, champion_id, token, "skip", "沒換到板凳英雄", &reason)
                     .await
             }
             BenchWaitError::LeftChampSelect => {
-                abort_auto_bench_swap(&app, &tracker, champion_id, "err", "自動換角已停止", "已離開選角")
+                abort_auto_bench_swap(&app, &tracker, champion_id, token, "err", "自動換角已停止", "已離開選角")
                     .await
             }
         }
@@ -856,12 +855,12 @@ async fn run_auto_bench_swap(
         // A newer manual snipe or another auto swap may own the bench by now.
         {
             let mut tr = tracker.lock().await;
-            if tr.bench_retry_target != Some(champion_id) {
+            if !tr.bench_job.owned_by(token) {
                 return;
             }
             if tr.manual_bench_hold.is_some() || tr.my_champ_id == champion_id {
                 // Nothing left to do: a manual pick landed, or we already hold it.
-                tr.bench_retry_target = None;
+                tr.finish_bench_job(token);
                 if tr.bot_expected_champ == Some(champion_id) {
                     tr.bot_expected_champ = None;
                 }
@@ -871,12 +870,12 @@ async fn run_auto_bench_swap(
             // Same lock hold as the ownership check: from here on this swap is
             // committed and a better suggestion may no longer take it over.
             // Mark the coming champion change as the bot's, not a manual pick.
-            tr.bench_swap_committed = Some(champion_id);
+            tr.commit_auto_bench(token);
             tr.bot_expected_champ = Some(champion_id);
         }
         if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
-            // `bench_retry_target` stays ours until the swap is checked below, so a
+            // The bench job stays ours until the swap is checked below, so a
             // new suggestion for the same champion does not start a second job.
             tr.bench_suggest_target = None;
             // `bot_expected_champ` stays set so the WS event for this swap reads
@@ -926,7 +925,7 @@ async fn run_auto_bench_swap(
             }
             if check != engine::BenchSwapCheck::NotLanded {
                 // Landed or taken: the session handler logs the outcome.
-                release_auto_bench_job(&app, &tracker, champion_id).await;
+                release_auto_bench_job(&app, &tracker, token).await;
                 return;
             }
             if unlanded_resends >= MAX_UNLANDED_RESENDS {
@@ -934,6 +933,7 @@ async fn run_auto_bench_swap(
                     &app,
                     &tracker,
                     champion_id,
+                    token,
                     "err",
                     "自動換角已停止",
                     &format!(
@@ -947,8 +947,8 @@ async fn run_auto_bench_swap(
             }
             unlanded_resends += 1;
             // It may have left and come back in between: honour a fresh 3s lock.
-            if wait_for_bench_lock(&lcu, &tracker, champion_id, true).await.is_err() {
-                release_auto_bench_job(&app, &tracker, champion_id).await;
+            if wait_for_bench_lock(&lcu, &tracker, champion_id, token).await.is_err() {
+                release_auto_bench_job(&app, &tracker, token).await;
                 return;
             }
             continue;
@@ -958,7 +958,7 @@ async fn run_auto_bench_swap(
         // bench before the next attempt instead of paying a GET before every
         // POST on the fast path.
         let Ok(session) = lcu.fetch_champ_select_session().await else {
-            abort_auto_bench_swap(&app, &tracker, champion_id, "err", "自動換角已停止", "已離開選角")
+            abort_auto_bench_swap(&app, &tracker, champion_id, token, "err", "自動換角已停止", "已離開選角")
                 .await;
             return;
         };
@@ -966,9 +966,7 @@ async fn run_auto_bench_swap(
         // already hold the champion, so there is nothing to retry or report.
         if session_my_champ_id(&session) == champion_id {
             let mut tr = tracker.lock().await;
-            if tr.bench_retry_target == Some(champion_id) {
-                tr.bench_retry_target = None;
-            }
+            tr.finish_bench_job(token);
             emit_champ_select_state(&app, &tr);
             return;
         }
@@ -977,6 +975,7 @@ async fn run_auto_bench_swap(
                 &app,
                 &tracker,
                 champion_id,
+                token,
                 "skip",
                 "沒換到板凳英雄",
                 &format!("【{}】被隊友先換走，改找下一個順位", champ_name),
@@ -999,6 +998,7 @@ async fn run_auto_bench_swap(
         &app,
         &tracker,
         champion_id,
+        token,
         "err",
         "自動換角已停止",
         &format!("英雄 (ID: {}) 自動換角重試 4 次仍失敗，已停止", champion_id),
@@ -1082,17 +1082,17 @@ fn bench_swap_landed(session: &serde_json::Value, champion_id: i32) -> Option<bo
     }
 }
 
-/// Finish a manual bench snipe: take the manual hold, clear the retry target,
-/// and record the result.
+/// Finish a manual bench snipe: take the manual hold, release the bench if this
+/// snipe still owns it, and record the result.
 async fn finish_manual_bench_snipe(
     app: &tauri::AppHandle,
     tracker: &SharedTracker,
     champion_id: i32,
+    token: u64,
     reason: String,
 ) {
     let mut tr = tracker.lock().await;
-    tr.bench_retry_target = None;
-    tr.manual_snipe_target = None;
+    tr.finish_bench_job(token);
     tr.manual_bench_hold = Some(champion_id);
     tr.bot_expected_champ = None;
     tr.last_bench_verdict = Some(reason.clone());
@@ -1129,19 +1129,16 @@ async fn swap_bench_champion(
     let snipe_ms = config.read().await.manual_snipe_interval_ms;
 
     // One retry loop per target: a second click must not start a duplicate chain.
-    let my_gen = {
+    let token = {
         let mut tr = tracker.lock().await;
-        if tr.manual_snipe_target == Some(champion_id) || tr.bench_retry_target == Some(champion_id) {
+        let Some(token) = tr.start_manual_bench(champion_id) else {
             return Ok(());
-        }
-        tr.manual_snipe_generation = tr.manual_snipe_generation.wrapping_add(1);
-        tr.manual_snipe_target = Some(champion_id);
-        tr.bench_retry_target = Some(champion_id);
+        };
         tr.bot_expected_champ = Some(champion_id);
-        tr.manual_snipe_generation
+        token
     };
 
-    // The UI shows `搶角中…` while `bench_retry_target` is set.
+    // The UI shows `搶角中…` while a bench job holds the champion.
     {
         let tr = tracker.lock().await;
         emit_champ_select_state(&app, &tr);
@@ -1166,23 +1163,19 @@ async fn swap_bench_champion(
         // The 3s bench lock is enforced here: nothing is sent before it expires.
         // The wall-clock cap starts counting only after the wait, so a click at
         // second 0 still gets its full retry budget.
-        if let Err(e) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id, false).await {
+        if let Err(e) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id, token).await {
             let (kind, reason) = match e {
-                BenchWaitError::LeftBench | BenchWaitError::Retargeted => (
+                // A newer snipe or the player's own pick took the bench over.
+                BenchWaitError::Retargeted => return,
+                BenchWaitError::LeftBench => (
                     "skip",
                     format!("英雄 (ID: {}) 還在 3 秒鎖內就被隊友換走", champion_id),
                 ),
                 BenchWaitError::LeftChampSelect => ("err", "已離開選角".to_string()),
             };
             let mut tr = tracker_retry.lock().await;
-            if tr.manual_snipe_generation == my_gen {
-                tr.manual_snipe_target = None;
-                if tr.bench_retry_target == Some(champion_id) {
-                    tr.bench_retry_target = None;
-                }
-                if tr.bot_expected_champ == Some(champion_id) {
-                    tr.bot_expected_champ = None;
-                }
+            if tr.finish_bench_job(token) && tr.bot_expected_champ == Some(champion_id) {
+                tr.bot_expected_champ = None;
             }
             emit_champ_select_state(&app_retry, &tr);
             drop(tr);
@@ -1211,19 +1204,18 @@ async fn swap_bench_champion(
             // 1. Cheap in-memory guards: a newer snipe or a takeover ends this loop.
             {
                 let tr = tracker_retry.lock().await;
-                if tr.manual_snipe_generation != my_gen {
-                    return;
-                }
-                if tr.manual_snipe_target != Some(champion_id) {
-                    // The session already showed the champion landing (that clears
-                    // the target): record the success instead of ending silently.
-                    let landed = tr.my_champ_id == champion_id;
+                if !tr.bench_job.owned_by(token) {
+                    // The session already showed the champion landing (that ends
+                    // the job): record the success instead of ending silently.
+                    // Any other job owning the bench is a newer snipe: leave it.
+                    let landed = tr.bench_job == BenchJob::Idle && tr.my_champ_id == champion_id;
                     drop(tr);
                     if landed {
                         finish_manual_bench_snipe(
                             &app_retry,
                             &tracker_retry,
                             champion_id,
+                            token,
                             format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
                         )
                         .await;
@@ -1239,6 +1231,7 @@ async fn swap_bench_champion(
                     &app_retry,
                     &tracker_retry,
                     champion_id,
+                    token,
                     format!("成功換取板凳英雄 (ID: {})，本局啟用手動保護", champion_id),
                 )
                 .await;
@@ -1265,6 +1258,7 @@ async fn swap_bench_champion(
                     &app_retry,
                     &tracker_retry,
                     champion_id,
+                    token,
                     format!(
                         "成功換取板凳英雄 (ID: {})，解鎖後 {} ms 確認到手，本局啟用手動保護",
                         champion_id,
@@ -1297,15 +1291,9 @@ async fn swap_bench_champion(
 
         // Exhausted the caps without a swap: release the target and say why.
         let mut tr = tracker_retry.lock().await;
-        if tr.manual_snipe_generation == my_gen {
-            // Only release what this loop owns: an auto retry may own the target now.
-            tr.manual_snipe_target = None;
-            if tr.bench_retry_target == Some(champion_id) {
-                tr.bench_retry_target = None;
-            }
-            if tr.bot_expected_champ == Some(champion_id) {
-                tr.bot_expected_champ = None;
-            }
+        // Only release what this loop owns: another job may own the bench now.
+        if tr.finish_bench_job(token) && tr.bot_expected_champ == Some(champion_id) {
+            tr.bot_expected_champ = None;
         }
         emit_champ_select_state(&app_retry, &tr);
         drop(tr);
@@ -3202,7 +3190,7 @@ async fn handle_champ_select_event(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     // A manual overview snipe owns the bench until it lands or gives up.
-    if bench_enabled && my_champ_id > 0 && tr.manual_snipe_target.is_none() {
+    if bench_enabled && my_champ_id > 0 && !tr.bench_job.is_manual() {
         let mut bench_champs = Vec::new();
         if let Some(b_arr) = data.get("benchChampions").and_then(|v| v.as_array()) {
             for b in b_arr {
@@ -3276,15 +3264,11 @@ async fn handle_champ_select_event(
             // An auto swap still waiting for another champion: hand the bench
             // to this better suggestion unless that swap is already being sent
             // or switching would make us wait longer.
-            let retarget_from = tr.bench_retry_target.filter(|&busy| {
-                busy != target_champ_id
-                    && settings.auto_bench_execute
-                    && tr.manual_snipe_target.is_none()
-                    && tr.bench_swap_committed != Some(busy)
-                    && bench_retarget_costs_no_time(
-                        bench_lock_remaining_for(&tr, data, busy),
-                        bench_lock_remaining_for(&tr, data, target_champ_id),
-                    )
+            let offer = tr.bench_job.offer_auto(target_champ_id, |busy| {
+                bench_retarget_costs_no_time(
+                    bench_lock_remaining_for(&tr, data, busy),
+                    bench_lock_remaining_for(&tr, data, target_champ_id),
+                )
             });
             // By default only suggest the swap: `swap_bench_champion` sends it
             // once the player clicks. With `auto_bench_execute` on, the backend
@@ -3316,11 +3300,8 @@ async fn handle_champ_select_event(
             // Opt-in automation: send the swap ourselves, but only after the
             // local 3s bench lock has expired. Off by default, and never
             // while a manual snipe or another auto swap owns the bench.
-            if settings.auto_bench_execute
-                && tr.manual_snipe_target.is_none()
-                && (tr.bench_retry_target.is_none() || retarget_from.is_some())
-            {
-                if let Some(busy) = retarget_from {
+            if settings.auto_bench_execute && offer != engine::AutoBenchOffer::Stay {
+                if let engine::AutoBenchOffer::Retarget { from: busy } = offer {
                     emit_bench_diag(
                         app_handle,
                         "改追",
@@ -3331,8 +3312,7 @@ async fn handle_champ_select_event(
                         ),
                     );
                 }
-                tr.bench_retry_target = Some(target_champ_id);
-                tr.bench_swap_committed = None;
+                let token = tr.start_auto_bench(target_champ_id);
                 emit_champ_select_state(app_handle, &tr);
                 let app_auto = app_handle.clone();
                 let lcu_auto: SharedLcu = Arc::clone(lcu);
@@ -3345,6 +3325,7 @@ async fn handle_champ_select_event(
                         lcu_auto,
                         tracker_auto,
                         target_champ_id,
+                        token,
                         champ_name,
                         retry_ms,
                     )
