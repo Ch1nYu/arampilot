@@ -822,31 +822,10 @@ async fn run_auto_bench_swap(
     champ_name: String,
     retry_ms: u64,
 ) {
-    let wait_started = Instant::now();
-    let seen_secs = tracker
-        .lock()
-        .await
-        .bench_first_seen
-        .get(&champion_id)
-        .map(|t| t.elapsed().as_secs_f64());
-    emit_bench_diag(
-        &app,
-        "開始等解鎖",
-        match seen_secs {
-            Some(secs) => format!("【{}】已在板凳上 {:.1} 秒，開始等 3 秒鎖", champ_name, secs),
-            None => format!("【{}】還沒有上板凳時間，開始等滿 3 秒鎖", champ_name),
-        },
-    );
     if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id, true).await {
         match e {
-            BenchWaitError::Retargeted => {
-                // The new job owns the bench now; leave the tracker to it.
-                emit_bench_diag(
-                    &app,
-                    "換角工作結束",
-                    format!("【{}】還沒送出，改追分數更高的板凳英雄", champ_name),
-                );
-            }
+            // The new job owns the bench now; leave the tracker to it.
+            BenchWaitError::Retargeted => {}
             BenchWaitError::LeftBench => {
                 let reason = format!("【{}】還在 3 秒鎖內就被隊友換走，改找下一個順位", champ_name);
                 abort_auto_bench_swap(&app, &tracker, champion_id, "skip", "沒換到板凳英雄", &reason)
@@ -860,15 +839,6 @@ async fn run_auto_bench_swap(
         return;
     }
     let unlocked_at = Instant::now();
-    emit_bench_diag(
-        &app,
-        "已解鎖",
-        format!(
-            "【{}】等了 {} ms，送出換角",
-            champ_name,
-            wait_started.elapsed().as_millis()
-        ),
-    );
 
     // LCU sometimes accepts a swap that never lands (2026-11-17/18 games): check
     // again after this long and resend while the champion is still on the bench.
@@ -887,32 +857,15 @@ async fn run_auto_bench_swap(
         {
             let mut tr = tracker.lock().await;
             if tr.bench_retry_target != Some(champion_id) {
-                drop(tr);
-                emit_bench_diag(
-                    &app,
-                    "換角工作結束",
-                    format!("【{}】沒送出：已有手動搶角或另一個換角接手", champ_name),
-                );
                 return;
             }
             if tr.manual_bench_hold.is_some() || tr.my_champ_id == champion_id {
                 // Nothing left to do: a manual pick landed, or we already hold it.
-                let why = if tr.my_champ_id == champion_id {
-                    "已經在手上"
-                } else {
-                    "玩家手動選角，保留手動選擇"
-                };
                 tr.bench_retry_target = None;
                 if tr.bot_expected_champ == Some(champion_id) {
                     tr.bot_expected_champ = None;
                 }
                 emit_champ_select_state(&app, &tr);
-                drop(tr);
-                emit_bench_diag(
-                    &app,
-                    "換角工作結束",
-                    format!("【{}】沒送出：{}", champ_name, why),
-                );
                 return;
             }
             // Same lock hold as the ownership check: from here on this swap is
@@ -921,20 +874,7 @@ async fn run_auto_bench_swap(
             tr.bench_swap_committed = Some(champion_id);
             tr.bot_expected_champ = Some(champion_id);
         }
-        let sent = lcu.swap_bench(champion_id).await;
-        emit_bench_diag(
-            &app,
-            "LCU 回應",
-            format!(
-                "【{}】第 {} 次送出：{}",
-                champ_name,
-                attempt + unlanded_resends + 1,
-                match &sent {
-                    Ok(reply) | Err(reply) => reply,
-                }
-            ),
-        );
-        if sent.is_ok() {
+        if lcu.swap_bench(champion_id).await.is_ok() {
             let mut tr = tracker.lock().await;
             // `bench_retry_target` stays ours until the swap is checked below, so a
             // new suggestion for the same champion does not start a second job.
@@ -3355,20 +3295,6 @@ async fn handle_champ_select_event(
                 // A skip after this suggestion is a new state: log it even if its
                 // reason matches the last skip logged.
                 tr.last_bench_skip_log_key = None;
-                if settings.auto_bench_execute
-                    && retarget_from.is_none()
-                    && let Some(busy) = tr.bench_retry_target.filter(|&b| b != target_champ_id)
-                {
-                    emit_bench_diag(
-                        app_handle,
-                        "暫不改追",
-                        format!(
-                            "正在等【{}】的換角，新建議【{}】要等它結束",
-                            name_of(busy),
-                            name_of(target_champ_id)
-                        ),
-                    );
-                }
                 emit_lcu_assist(
                     app_handle,
                     serde_json::json!({
