@@ -286,6 +286,16 @@ pub(crate) async fn release_auto_bench_job(app: &tauri::AppHandle, tracker: &Sha
 /// Waits out the same local 3s bench lock the manual snipe honours, then sends
 /// one swap at a time and retries at most 3 more times. Never sets
 /// `manual_bench_hold`: an automatic swap is not a manual pick.
+/// Whether the player may take this champion in the current champ select.
+/// An unreadable list counts as pickable, so a failed lookup never blocks a swap.
+async fn is_pickable(lcu: &SharedLcu, champion_id: i32) -> bool {
+    pickable_allows(lcu.fetch_pickable_champion_ids().await.as_deref(), champion_id)
+}
+
+fn pickable_allows(pickable: Option<&[i32]>, champion_id: i32) -> bool {
+    pickable.is_none_or(|ids| ids.contains(&champion_id))
+}
+
 pub(crate) async fn run_auto_bench_swap(
     app: tauri::AppHandle,
     lcu: SharedLcu,
@@ -295,6 +305,14 @@ pub(crate) async fn run_auto_bench_swap(
     champ_name: String,
     retry_ms: u64,
 ) {
+    // LCU answers 204 to a swap for a champion the player cannot pick and then
+    // never applies it (Quinn, 2026-11-20): say why instead of resending.
+    if !is_pickable(&lcu, champion_id).await {
+        tracker.lock().await.bench_given_up.insert(champion_id);
+        let reason = format!("【{}】不在本場可選清單（帳號沒有這隻英雄），本場不換它", champ_name);
+        abort_auto_bench_swap(&app, &tracker, champion_id, token, "skip", "沒換到板凳英雄", &reason).await;
+        return;
+    }
     if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id, token).await {
         match e {
             // The new job owns the bench now; leave the tracker to it.
@@ -662,6 +680,23 @@ pub(crate) async fn swap_bench_champion(
     let app_retry = app.clone();
 
     tauri::async_runtime::spawn(async move {
+        if !is_pickable(&lcu_retry, champion_id).await {
+            let mut tr = tracker_retry.lock().await;
+            if tr.finish_bench_job(token) && tr.bot_expected_champ == Some(champion_id) {
+                tr.bot_expected_champ = None;
+            }
+            emit_champ_select_state(&app_retry, &tr);
+            drop(tr);
+            let _ = app_retry.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "err",
+                    "title": "手動搶角未成功",
+                    "reason": format!("英雄 (ID: {}) 不在本場可選清單（帳號沒有這隻英雄），沒有送出", champion_id),
+                }),
+            );
+            return;
+        }
         // The 3s bench lock is enforced here: nothing is sent before it expires.
         // The wall-clock cap starts counting only after the wait, so a click at
         // second 0 still gets its full retry budget.
@@ -816,6 +851,15 @@ pub(crate) async fn swap_bench_champion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_unpickable_bench_champion_is_not_swapped() {
+        // Quinn (133) was not in the pickable list of the 2026-11-20 game.
+        assert!(!pickable_allows(Some(&[37, 163]), 133));
+        assert!(pickable_allows(Some(&[37, 133]), 133));
+        // A failed lookup must not block a swap.
+        assert!(pickable_allows(None, 133));
+    }
 
     #[test]
     fn test_bench_swap_debug_keeps_bench_fields_and_drops_identity() {
