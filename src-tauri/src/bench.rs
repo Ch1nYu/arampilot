@@ -365,7 +365,22 @@ pub(crate) async fn run_auto_bench_swap(
             tr.commit_auto_bench(token);
             tr.bot_expected_champ = Some(champion_id);
         }
-        if lcu.swap_bench(champion_id).await.is_ok() {
+        let sent_at = Instant::now();
+        let sent = lcu.swap_bench(champion_id).await;
+        // Splits the landing time in the "已自動換成板凳英雄" line: what is left
+        // after these two is the wait for the session event.
+        emit_bench_diag(
+            &app,
+            "送出耗時",
+            format!(
+                "【{}】解鎖後 {} ms 送出，LCU {} ms 後回應（{}）",
+                champ_name,
+                sent_at.duration_since(unlocked_at).as_millis(),
+                sent_at.elapsed().as_millis(),
+                if sent.is_ok() { "接受" } else { "失敗" }
+            ),
+        );
+        if sent.is_ok() {
             let mut tr = tracker.lock().await;
             // `bot_expected_champ` stays set so the WS event for this swap reads
             // as a bot swap and takes no manual hold.
