@@ -35,31 +35,6 @@ pub(crate) fn bench_lock_remaining_secs(
     from_seen.max(from_phase)
 }
 
-/// Seconds the bench lock still holds `champion_id` in this session snapshot.
-pub(crate) fn bench_lock_remaining_for(
-    tr: &ChampSelectSessionTracker,
-    data: &serde_json::Value,
-    champion_id: i32,
-) -> f64 {
-    bench_lock_remaining_secs(
-        tr.bench_first_seen
-            .get(&champion_id)
-            .map(|t| t.elapsed().as_secs_f64()),
-        champ_select_phase(data),
-        phase_elapsed_ms(data).map(|ms| ms as f64 / 1000.0),
-    )
-}
-
-/// Whether a better bench suggestion may take over an auto swap that is still
-/// waiting: only when the new champion unlocks no later than the one being
-/// waited on, so switching never costs time. In the BAN_PICK opening window
-/// both wait for the same floor, so the better one always wins there
-/// (2026-11-20: Nidalee +7 was swapped in first, Kai'Sa +25 two seconds later).
-pub(crate) fn bench_retarget_costs_no_time(busy_remaining_secs: f64, new_remaining_secs: f64) -> bool {
-    const SLACK_SECS: f64 = 0.2;
-    new_remaining_secs <= busy_remaining_secs + SLACK_SECS
-}
-
 /// Log what really happened to an auto bench swap once the session shows it.
 pub(crate) fn log_bench_swap_outcome(
     app_handle: &tauri::AppHandle,
@@ -859,20 +834,6 @@ mod tests {
         assert_eq!(bench_swap_landed(&session(800, &[112]), 42), Some(false));
         // Not settled yet: Corki still on the bench.
         assert_eq!(bench_swap_landed(&session(800, &[42, 112]), 42), None);
-    }
-
-    #[test]
-    fn test_better_bench_suggestion_takes_over_only_when_it_costs_no_time() {
-        // 2026-11-20 14:07: Nidalee (+7) and Kai'Sa (+25) both waited for the
-        // BAN_PICK opening window, so the auto swap must chase Kai'Sa.
-        let nidalee = bench_lock_remaining_secs(Some(2.0), "BAN_PICK", Some(3.0));
-        let kaisa = bench_lock_remaining_secs(Some(0.0), "BAN_PICK", Some(3.0));
-        assert!(bench_retarget_costs_no_time(nidalee, kaisa));
-        // After the window the waited-on champion is unlocked and a fresh one
-        // still has its 3s lock: keep the swap that can go out now.
-        let unlocked = bench_lock_remaining_secs(Some(10.0), "BAN_PICK", Some(20.0));
-        let fresh = bench_lock_remaining_secs(Some(0.0), "BAN_PICK", Some(20.0));
-        assert!(!bench_retarget_costs_no_time(unlocked, fresh));
     }
 
     #[test]

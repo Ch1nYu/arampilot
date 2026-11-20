@@ -553,8 +553,9 @@ pub struct ChampSelectSessionTracker {
 pub enum BenchJob {
     #[default]
     Idle,
-    /// Auto swap waiting out the bench lock: a better suggestion may take over.
-    AutoWaiting { champ_id: i32, token: u64 },
+    /// Auto swap waiting out the bench lock: a higher-scoring suggestion takes
+    /// over. `diff` is its score gain over the champion we hold.
+    AutoWaiting { champ_id: i32, token: u64, diff: i32 },
     /// Auto swap that started sending: it keeps the bench until it is checked.
     AutoSending { champ_id: i32, token: u64 },
     /// Overview "搶角" click. Getting it (by WS event or HTTP reply, in either
@@ -595,17 +596,14 @@ impl BenchJob {
         matches!(self, BenchJob::Manual { .. })
     }
 
-    /// Whether an auto swap for `target` may start. `retarget_costs_no_time` is
-    /// asked about the champion a waiting auto swap is chasing.
-    pub fn offer_auto(
-        &self,
-        target: i32,
-        retarget_costs_no_time: impl FnOnce(i32) -> bool,
-    ) -> AutoBenchOffer {
+    /// Whether an auto swap for `target` (gaining `diff` over the champion we
+    /// hold) may start. A waiting swap gives way to a strictly higher score even
+    /// when the new champion is still in its 3s lock: a tie never costs a wait.
+    pub fn offer_auto(&self, target: i32, diff: i32) -> AutoBenchOffer {
         match *self {
             BenchJob::Idle => AutoBenchOffer::Start,
-            BenchJob::AutoWaiting { champ_id, .. }
-                if champ_id != target && retarget_costs_no_time(champ_id) =>
+            BenchJob::AutoWaiting { champ_id, diff: busy_diff, .. }
+                if champ_id != target && diff > busy_diff =>
             {
                 AutoBenchOffer::Retarget { from: champ_id }
             }
@@ -729,9 +727,9 @@ impl ChampSelectSessionTracker {
     }
 
     /// Hand the bench to a new auto swap for `champ_id`; returns its token.
-    pub fn start_auto_bench(&mut self, champ_id: i32) -> u64 {
+    pub fn start_auto_bench(&mut self, champ_id: i32, diff: i32) -> u64 {
         let token = self.next_bench_token();
-        self.bench_job = BenchJob::AutoWaiting { champ_id, token };
+        self.bench_job = BenchJob::AutoWaiting { champ_id, token, diff };
         token
     }
 
@@ -748,7 +746,7 @@ impl ChampSelectSessionTracker {
 
     /// The auto swap owning `token` starts sending: no suggestion takes it over now.
     pub fn commit_auto_bench(&mut self, token: u64) {
-        if let BenchJob::AutoWaiting { champ_id, token: t } = self.bench_job
+        if let BenchJob::AutoWaiting { champ_id, token: t, .. } = self.bench_job
             && t == token
         {
             self.bench_job = BenchJob::AutoSending { champ_id, token };
@@ -1077,7 +1075,7 @@ mod tests {
             bench_suggest_target: Some(126),
             ..Default::default()
         };
-        tr.start_auto_bench(126);
+        tr.start_auto_bench(126, 10);
         tr.begin_manual_card_pick(90);
         assert_eq!(tr.bench_job, BenchJob::Idle);
         assert_eq!(tr.bot_expected_champ, None);
@@ -1087,19 +1085,21 @@ mod tests {
     #[test]
     fn test_bench_job_offers_auto_swaps_by_owner() {
         let job = BenchJob::default();
-        assert_eq!(job.offer_auto(7, |_| true), AutoBenchOffer::Start);
+        assert_eq!(job.offer_auto(7, 10), AutoBenchOffer::Start);
 
         let mut tr = ChampSelectSessionTracker::default();
-        let first = tr.start_auto_bench(7);
+        let first = tr.start_auto_bench(7, 10);
         assert_eq!(tr.bench_job.champ_id(), Some(7));
         // The same suggestion again must not start a second job.
-        assert_eq!(tr.bench_job.offer_auto(7, |_| true), AutoBenchOffer::Stay);
-        // A better one takes a waiting swap over only when the policy allows it.
-        assert_eq!(tr.bench_job.offer_auto(9, |busy| busy == 7), AutoBenchOffer::Retarget { from: 7 });
-        assert_eq!(tr.bench_job.offer_auto(9, |_| false), AutoBenchOffer::Stay);
+        assert_eq!(tr.bench_job.offer_auto(7, 10), AutoBenchOffer::Stay);
+        // A strictly higher score takes a waiting swap over, even if it is still
+        // in its own 3s lock; a tie or a lower one never does.
+        assert_eq!(tr.bench_job.offer_auto(9, 23), AutoBenchOffer::Retarget { from: 7 });
+        assert_eq!(tr.bench_job.offer_auto(9, 10), AutoBenchOffer::Stay);
+        assert_eq!(tr.bench_job.offer_auto(9, 8), AutoBenchOffer::Stay);
 
         // Taking over leaves the old loop without the bench.
-        let second = tr.start_auto_bench(9);
+        let second = tr.start_auto_bench(9, 23);
         assert!(!tr.bench_job.owned_by(first));
         assert!(!tr.finish_bench_job(first));
         assert!(tr.bench_job.owned_by(second));
@@ -1109,7 +1109,7 @@ mod tests {
         assert!(matches!(tr.bench_job, BenchJob::AutoWaiting { .. }));
         tr.commit_auto_bench(second);
         assert!(matches!(tr.bench_job, BenchJob::AutoSending { champ_id: 9, .. }));
-        assert_eq!(tr.bench_job.offer_auto(11, |_| true), AutoBenchOffer::Stay);
+        assert_eq!(tr.bench_job.offer_auto(11, 99), AutoBenchOffer::Stay);
         assert!(tr.finish_bench_job(second));
         assert_eq!(tr.bench_job, BenchJob::Idle);
     }
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn test_manual_snipe_owns_the_bench_against_auto() {
         let mut tr = ChampSelectSessionTracker::default();
-        let auto = tr.start_auto_bench(7);
+        let auto = tr.start_auto_bench(7, 10);
         // A click on the champion already being chased starts nothing new.
         assert_eq!(tr.start_manual_bench(7), None);
         assert!(tr.bench_job.owned_by(auto));
@@ -1125,7 +1125,7 @@ mod tests {
         let manual = tr.start_manual_bench(9).unwrap();
         assert!(!tr.bench_job.owned_by(auto));
         assert!(tr.bench_job.is_manual());
-        assert_eq!(tr.bench_job.offer_auto(11, |_| true), AutoBenchOffer::Stay);
+        assert_eq!(tr.bench_job.offer_auto(11, 99), AutoBenchOffer::Stay);
         // A newer click replaces the older snipe.
         let newer = tr.start_manual_bench(11).unwrap();
         assert!(!tr.bench_job.owned_by(manual));
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn test_auto_bench_landing_is_a_bot_swap_and_ends_the_job() {
         let mut tr = ChampSelectSessionTracker::default();
-        tr.start_auto_bench(7);
+        tr.start_auto_bench(7, 10);
         tr.observe_champion_change(1, 7);
         assert_eq!(tr.manual_bench_hold, None);
         assert_eq!(tr.bench_job, BenchJob::Idle);
@@ -1144,10 +1144,10 @@ mod tests {
     #[test]
     fn test_bench_tokens_never_repeat_across_sessions() {
         let mut tr = ChampSelectSessionTracker::default();
-        let old = tr.start_auto_bench(7);
+        let old = tr.start_auto_bench(7, 10);
         tr.reset();
         assert_eq!(tr.bench_job, BenchJob::Idle);
-        let new = tr.start_auto_bench(7);
+        let new = tr.start_auto_bench(7, 10);
         assert_ne!(old, new);
         assert!(!tr.finish_bench_job(old), "a loop from the last session must not release the new job");
     }

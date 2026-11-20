@@ -2452,20 +2452,14 @@ async fn handle_champ_select_event(
 
         if let BenchDecision::Swap {
             target_champ_id,
+            diff,
             reason,
-            ..
         } = decision
         {
             tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
-            // An auto swap still waiting for another champion: hand the bench
-            // to this better suggestion unless that swap is already being sent
-            // or switching would make us wait longer.
-            let offer = tr.bench_job.offer_auto(target_champ_id, |busy| {
-                bench_retarget_costs_no_time(
-                    bench_lock_remaining_for(&tr, data, busy),
-                    bench_lock_remaining_for(&tr, data, target_champ_id),
-                )
-            });
+            // An auto swap still waiting for another champion hands the bench
+            // to a higher-scoring suggestion unless it is already being sent.
+            let offer = tr.bench_job.offer_auto(target_champ_id, diff);
             // By default only suggest the swap: `swap_bench_champion` sends it
             // once the player clicks. With `auto_bench_execute` on, the backend
             // sends it itself after the 3s bench lock. Emit once per suggested
@@ -2502,13 +2496,14 @@ async fn handle_champ_select_event(
                         app_handle,
                         "改追",
                         format!(
-                            "【{}】還沒送出，改追分數更高的【{}】（不會多等）",
+                            "【{}】還沒送出，改追分數更高的【{}】（+{}）",
                             name_of(busy),
-                            name_of(target_champ_id)
+                            name_of(target_champ_id),
+                            diff
                         ),
                     );
                 }
-                let token = tr.start_auto_bench(target_champ_id);
+                let token = tr.start_auto_bench(target_champ_id, diff);
                 emit_champ_select_state(app_handle, &tr);
                 let app_auto = app_handle.clone();
                 let lcu_auto: SharedLcu = Arc::clone(lcu);
