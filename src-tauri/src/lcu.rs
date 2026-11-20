@@ -1140,15 +1140,6 @@ impl LcuManager {
         if status.is_success() { Ok(reply) } else { Err(reply) }
     }
 
-    /// Submit the post-game ballot, which ends the honor screen. The client
-    /// only submits on its own once every vote is spent; with votes left
-    /// over (more votes than party allies) it waits for the player.
-    pub async fn submit_honor_ballot(&self) -> Result<String, String> {
-        self.ensure_connected().await?;
-        let (status, reply) = self.post_with_reply("/lol-honor/v1/ballot", None).await?;
-        if status.is_success() { Ok(reply) } else { Err(reply) }
-    }
-
     /// Name of the post-game screen the client is showing; `None` when the
     /// request fails, `Some("")` when there is none.
     pub async fn fetch_pre_end_sequence_event(&self) -> Option<String> {

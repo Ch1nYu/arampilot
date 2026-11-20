@@ -2310,7 +2310,6 @@ async fn try_auto_honor(
     // and the ballot read back 0/3). Only the ballot read-back proves an
     // honor counted, so retry until it does. Phase events are handled in
     // order on this thread, so play-again waits for this loop to finish.
-    let votes = postgame::ballot_votes(&ballot);
     let mut ballot = ballot;
     let mut replies: Vec<String> = Vec::new();
     let mut attempt = 1;
@@ -2345,28 +2344,6 @@ async fn try_auto_honor(
         if outcome == postgame::HonorOutcome::Done {
             tr.honor_done_game_id = Some(game_id);
         }
-    }
-
-    // Leftover votes keep the client on the honor screen; submit the ballot
-    // so play-again and the next queue can go on.
-    if outcome == postgame::HonorOutcome::Done && postgame::ballot_needs_submit(votes, wanted.len()) {
-        let (kind, title, reply) = match lcu.submit_honor_ballot().await {
-            Ok(reply) => ("act", "已略過剩下的按讚", reply),
-            Err(reply) => ("err", "略過剩下的按讚失敗", reply),
-        };
-        let _ = app.emit(
-            "lcu-log",
-            serde_json::json!({
-                "kind": kind,
-                "title": title,
-                "reason": format!(
-                    "共 {} 票，按讚 {} 位組排隊友後送出 POST /lol-honor/v1/ballot；回應：{}",
-                    votes,
-                    wanted.len(),
-                    reply
-                ),
-            }),
-        );
     }
 
     let recorded_text = recorded

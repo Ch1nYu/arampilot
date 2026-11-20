@@ -170,22 +170,6 @@ pub fn honor_outcome(
     }
 }
 
-/// Votes the ballot offers; 0 when it carries no vote pool.
-pub fn ballot_votes(ballot: &serde_json::Value) -> u64 {
-    ballot
-        .get("votePool")
-        .and_then(|v| v.get("votes"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-}
-
-/// Whether the app must submit the ballot itself after honoring `honored`
-/// allies out of `votes`. The client leaves the honor screen on its own only
-/// when every vote is spent, so leftover votes would stall the post-game flow.
-pub fn ballot_needs_submit(votes: u64, honored: usize) -> bool {
-    votes > honored as u64
-}
-
 /// What to do with the post-game screen the client is showing (a
 /// `/lol-pre-end-of-game/v1/currentSequenceEvent` name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,16 +476,6 @@ mod tests {
         assert_eq!(pre_end_action("honor-vote", false), PreEndAction::Leave);
         assert_eq!(pre_end_action("tft-rewards", true), PreEndAction::Leave);
         assert_eq!(pre_end_action("mastery/../x", true), PreEndAction::Leave);
-    }
-
-    #[test]
-    fn test_leftover_votes_need_a_ballot_submit() {
-        // 2026-11-20: 3 votes, 2 premade allies honored, the client stayed on
-        // the honor screen. Exactly spent votes move on by themselves.
-        assert!(ballot_needs_submit(3, 2));
-        assert!(!ballot_needs_submit(2, 2));
-        assert_eq!(ballot_votes(&ballot_payload(3, &[], &[])), 3);
-        assert_eq!(ballot_votes(&serde_json::json!({})), 0);
     }
 
     #[test]
