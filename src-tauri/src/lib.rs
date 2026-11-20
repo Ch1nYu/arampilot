@@ -536,6 +536,31 @@ fn bench_lock_remaining_secs(
     from_seen.max(from_phase)
 }
 
+/// Seconds the bench lock still holds `champion_id` in this session snapshot.
+fn bench_lock_remaining_for(
+    tr: &ChampSelectSessionTracker,
+    data: &serde_json::Value,
+    champion_id: i32,
+) -> f64 {
+    bench_lock_remaining_secs(
+        tr.bench_first_seen
+            .get(&champion_id)
+            .map(|t| t.elapsed().as_secs_f64()),
+        champ_select_phase(data),
+        phase_elapsed_ms(data).map(|ms| ms as f64 / 1000.0),
+    )
+}
+
+/// Whether a better bench suggestion may take over an auto swap that is still
+/// waiting: only when the new champion unlocks no later than the one being
+/// waited on, so switching never costs time. In the BAN_PICK opening window
+/// both wait for the same floor, so the better one always wins there
+/// (2026-11-20: Nidalee +7 was swapped in first, Kai'Sa +25 two seconds later).
+fn bench_retarget_costs_no_time(busy_remaining_secs: f64, new_remaining_secs: f64) -> bool {
+    const SLACK_SECS: f64 = 0.2;
+    new_remaining_secs <= busy_remaining_secs + SLACK_SECS
+}
+
 /// Log what really happened to an auto bench swap once the session shows it.
 fn log_bench_swap_outcome(
     app_handle: &tauri::AppHandle,
@@ -671,12 +696,15 @@ enum BenchWaitError {
     /// The champion left the bench: a teammate took it. Not an error.
     LeftBench,
     LeftChampSelect,
+    /// A better suggestion took over this auto swap before it was sent.
+    Retargeted,
 }
 
 async fn wait_for_bench_lock(
     lcu: &SharedLcu,
     tracker: &SharedTracker,
     champion_id: i32,
+    retargetable: bool,
 ) -> Result<(), BenchWaitError> {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
     loop {
@@ -689,6 +717,9 @@ async fn wait_for_bench_lock(
         let phase_left = phase_left_secs(&session);
         let (seen_elapsed, phase, phase_elapsed_secs) = {
             let mut tr = tracker.lock().await;
+            if retargetable && tr.bench_retry_target != Some(champion_id) {
+                return Err(BenchWaitError::Retargeted);
+            }
             if on_bench {
                 // Safety net: the snapshot normally records this, but a champion
                 // we have never seen still has to unlock.
@@ -806,8 +837,16 @@ async fn run_auto_bench_swap(
             None => format!("【{}】還沒有上板凳時間，開始等滿 3 秒鎖", champ_name),
         },
     );
-    if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id).await {
+    if let Err(e) = wait_for_bench_lock(&lcu, &tracker, champion_id, true).await {
         match e {
+            BenchWaitError::Retargeted => {
+                // The new job owns the bench now; leave the tracker to it.
+                emit_bench_diag(
+                    &app,
+                    "換角工作結束",
+                    format!("【{}】還沒送出，改追分數更高的板凳英雄", champ_name),
+                );
+            }
             BenchWaitError::LeftBench => {
                 let reason = format!("【{}】還在 3 秒鎖內就被隊友換走，改找下一個順位", champ_name);
                 abort_auto_bench_swap(&app, &tracker, champion_id, "skip", "沒換到板凳英雄", &reason)
@@ -876,11 +915,10 @@ async fn run_auto_bench_swap(
                 );
                 return;
             }
-        }
-
-        // Mark the coming champion change as the bot's, not a manual pick.
-        {
-            let mut tr = tracker.lock().await;
+            // Same lock hold as the ownership check: from here on this swap is
+            // committed and a better suggestion may no longer take it over.
+            // Mark the coming champion change as the bot's, not a manual pick.
+            tr.bench_swap_committed = Some(champion_id);
             tr.bot_expected_champ = Some(champion_id);
         }
         let sent = lcu.swap_bench(champion_id).await;
@@ -969,7 +1007,7 @@ async fn run_auto_bench_swap(
             }
             unlanded_resends += 1;
             // It may have left and come back in between: honour a fresh 3s lock.
-            if wait_for_bench_lock(&lcu, &tracker, champion_id).await.is_err() {
+            if wait_for_bench_lock(&lcu, &tracker, champion_id, true).await.is_err() {
                 release_auto_bench_job(&app, &tracker, champion_id).await;
                 return;
             }
@@ -1188,9 +1226,9 @@ async fn swap_bench_champion(
         // The 3s bench lock is enforced here: nothing is sent before it expires.
         // The wall-clock cap starts counting only after the wait, so a click at
         // second 0 still gets its full retry budget.
-        if let Err(e) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id).await {
+        if let Err(e) = wait_for_bench_lock(&lcu_retry, &tracker_retry, champion_id, false).await {
             let (kind, reason) = match e {
-                BenchWaitError::LeftBench => (
+                BenchWaitError::LeftBench | BenchWaitError::Retargeted => (
                     "skip",
                     format!("英雄 (ID: {}) 還在 3 秒鎖內就被隊友換走", champion_id),
                 ),
@@ -3229,6 +3267,19 @@ async fn handle_champ_select_event(
         } = decision
         {
             tr.last_bench_verdict = Some(format!("建議換成：{}", reason));
+            // An auto swap still waiting for another champion: hand the bench
+            // to this better suggestion unless that swap is already being sent
+            // or switching would make us wait longer.
+            let retarget_from = tr.bench_retry_target.filter(|&busy| {
+                busy != target_champ_id
+                    && settings.auto_bench_execute
+                    && tr.manual_snipe_target.is_none()
+                    && tr.bench_swap_committed != Some(busy)
+                    && bench_retarget_costs_no_time(
+                        bench_lock_remaining_for(&tr, data, busy),
+                        bench_lock_remaining_for(&tr, data, target_champ_id),
+                    )
+            });
             // By default only suggest the swap: `swap_bench_champion` sends it
             // once the player clicks. With `auto_bench_execute` on, the backend
             // sends it itself after the 3s bench lock. Emit once per suggested
@@ -3239,6 +3290,7 @@ async fn handle_champ_select_event(
                 // reason matches the last skip logged.
                 tr.last_bench_skip_log_key = None;
                 if settings.auto_bench_execute
+                    && retarget_from.is_none()
                     && let Some(busy) = tr.bench_retry_target.filter(|&b| b != target_champ_id)
                 {
                     emit_bench_diag(
@@ -3274,9 +3326,21 @@ async fn handle_champ_select_event(
             // while a manual snipe or another auto swap owns the bench.
             if settings.auto_bench_execute
                 && tr.manual_snipe_target.is_none()
-                && tr.bench_retry_target.is_none()
+                && (tr.bench_retry_target.is_none() || retarget_from.is_some())
             {
+                if let Some(busy) = retarget_from {
+                    emit_bench_diag(
+                        app_handle,
+                        "改追",
+                        format!(
+                            "【{}】還沒送出，改追分數更高的【{}】（不會多等）",
+                            name_of(busy),
+                            name_of(target_champ_id)
+                        ),
+                    );
+                }
                 tr.bench_retry_target = Some(target_champ_id);
+                tr.bench_swap_committed = None;
                 emit_champ_select_state(app_handle, &tr);
                 let app_auto = app_handle.clone();
                 let lcu_auto: SharedLcu = Arc::clone(lcu);
@@ -3568,7 +3632,7 @@ mod tests {
     }
 
     use super::{
-        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_swap_landed,
+        SaveConfigError, append_line_rotating, bench_lock_remaining_secs, bench_retarget_costs_no_time, bench_swap_landed,
         can_finish_bench_lock_without_poll, champ_select_phase, is_card_pick_still_pending, phase_left_secs,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs, session_my_champ_id,
         validate_trade_chat_text,
@@ -3747,6 +3811,20 @@ mod tests {
         assert_eq!(bench_swap_landed(&session(800, &[112]), 42), Some(false));
         // Not settled yet: Corki still on the bench.
         assert_eq!(bench_swap_landed(&session(800, &[42, 112]), 42), None);
+    }
+
+    #[test]
+    fn test_better_bench_suggestion_takes_over_only_when_it_costs_no_time() {
+        // 2026-11-20 14:07: Nidalee (+7) and Kai'Sa (+25) both waited for the
+        // BAN_PICK opening window, so the auto swap must chase Kai'Sa.
+        let nidalee = bench_lock_remaining_secs(Some(2.0), "BAN_PICK", Some(3.0));
+        let kaisa = bench_lock_remaining_secs(Some(0.0), "BAN_PICK", Some(3.0));
+        assert!(bench_retarget_costs_no_time(nidalee, kaisa));
+        // After the window the waited-on champion is unlocked and a fresh one
+        // still has its 3s lock: keep the swap that can go out now.
+        let unlocked = bench_lock_remaining_secs(Some(10.0), "BAN_PICK", Some(20.0));
+        let fresh = bench_lock_remaining_secs(Some(0.0), "BAN_PICK", Some(20.0));
+        assert!(!bench_retarget_costs_no_time(unlocked, fresh));
     }
 
     #[test]

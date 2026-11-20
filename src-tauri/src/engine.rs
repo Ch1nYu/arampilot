@@ -530,6 +530,9 @@ pub struct ChampSelectSessionTracker {
     /// bench swap endpoint does not enforce the 3s lock the official client
     /// applies, so the app times it itself from this map.
     pub bench_first_seen: std::collections::HashMap<i32, std::time::Instant>,
+    /// The auto bench job that has started sending its swap. Until then a
+    /// better suggestion may replace `bench_retry_target`; after it, never.
+    pub bench_swap_committed: Option<i32>,
     pub last_trade_verdict: Option<String>, // Backend trade verdict shown on the overview card
     /// `(champ_id, spell1_id, spell2_id)` we already pushed to LCU this session.
     pub last_applied_spells: Option<(i32, i32, i32)>,
@@ -648,6 +651,7 @@ impl ChampSelectSessionTracker {
         self.last_bench_verdict = None;
         self.bench_suggest_target = None;
         self.bench_first_seen.clear();
+        self.bench_swap_committed = None;
         self.last_trade_verdict = None;
         self.last_applied_spells = None;
         self.initial_client_spells = None;
