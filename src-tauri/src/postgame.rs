@@ -182,8 +182,8 @@ pub enum PreEndAction {
     Leave,
 }
 
-/// Mastery level-ups are always confirmed; the honor screen only once every
-/// party honor landed. Any other screen is left alone. Names outside
+/// Mastery level-ups and `*-celebration` screens are always confirmed; the
+/// honor screen only once every party honor landed. Any other screen is left alone. Names outside
 /// `[A-Za-z0-9._-]` are left too, since they go into the URL path as is.
 pub fn pre_end_action(name: &str, honor_finished: bool) -> PreEndAction {
     if name.is_empty() {
@@ -193,7 +193,12 @@ pub fn pre_end_action(name: &str, honor_finished: bool) -> PreEndAction {
         return PreEndAction::Leave;
     }
     let lower = name.to_ascii_lowercase();
-    if lower.contains("mastery") || (lower.contains("honor") && honor_finished) {
+    // Celebrations (challenge level-ups, missions, ranked) only play an
+    // animation: confirming them skips nothing the player has to decide.
+    if lower.contains("mastery")
+        || lower.ends_with("-celebration")
+        || (lower.contains("honor") && honor_finished)
+    {
         PreEndAction::Complete
     } else {
         PreEndAction::Leave
@@ -475,6 +480,10 @@ mod tests {
         assert_eq!(pre_end_action("honor-vote", true), PreEndAction::Complete);
         assert_eq!(pre_end_action("honor-vote", false), PreEndAction::Leave);
         assert_eq!(pre_end_action("tft-rewards", true), PreEndAction::Leave);
+        // Seen 2026-11-20: these held the client 3.5 s every game and 11 s once.
+        assert_eq!(pre_end_action("challenge-level-up-celebration", false), PreEndAction::Complete);
+        assert_eq!(pre_end_action("missions-celebration", false), PreEndAction::Complete);
+        assert_eq!(pre_end_action("ranked-celebration", false), PreEndAction::Complete);
         assert_eq!(pre_end_action("mastery/../x", true), PreEndAction::Leave);
     }
 
