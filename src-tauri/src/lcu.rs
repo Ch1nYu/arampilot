@@ -1149,6 +1149,22 @@ impl LcuManager {
         if status.is_success() { Ok(reply) } else { Err(reply) }
     }
 
+    /// Name of the post-game screen the client is showing; `None` when the
+    /// request fails, `Some("")` when there is none.
+    pub async fn fetch_pre_end_sequence_event(&self) -> Option<String> {
+        self.get_json_opt("/lol-pre-end-of-game/v1/currentSequenceEvent")
+            .await
+            .map(|v| v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string())
+    }
+
+    /// Close one post-game screen, the same as its confirm button.
+    pub async fn complete_pre_end_sequence_event(&self, name: &str) -> Result<String, String> {
+        self.ensure_connected().await?;
+        let path = format!("/lol-pre-end-of-game/v1/complete/{}", name);
+        let (status, reply) = self.post_with_reply(&path, None).await?;
+        if status.is_success() { Ok(reply) } else { Err(reply) }
+    }
+
     pub async fn send_chat_message(&self, chat_id: &str, body: &str) -> Result<(), String> {
         let path = format!("/lol-chat/v1/conversations/{}/messages", chat_id);
         let payload = serde_json::json!({

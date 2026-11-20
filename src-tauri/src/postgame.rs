@@ -69,6 +69,8 @@ pub struct AutoQueueTracker {
     pub own_puuid: Option<String>,
     /// `gameId` already honored, so the ballot is spent once per game.
     pub honored_game_id: Option<i64>,
+    /// `gameId` whose party honors all landed, so its honor screen may close.
+    pub honor_done_game_id: Option<i64>,
 }
 
 /// Party puuids (`members[].puuid`) and the player's own puuid
@@ -182,6 +184,36 @@ pub fn ballot_votes(ballot: &serde_json::Value) -> u64 {
 /// when every vote is spent, so leftover votes would stall the post-game flow.
 pub fn ballot_needs_submit(votes: u64, honored: usize) -> bool {
     votes > honored as u64
+}
+
+/// What to do with the post-game screen the client is showing (a
+/// `/lol-pre-end-of-game/v1/currentSequenceEvent` name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreEndAction {
+    /// No screen right now.
+    Nothing,
+    /// Close it, as if the player pressed confirm.
+    Complete,
+    /// Not ours to close: leave it to the player.
+    Leave,
+}
+
+/// Mastery level-ups are always confirmed; the honor screen only once every
+/// party honor landed. Any other screen is left alone. Names outside
+/// `[A-Za-z0-9._-]` are left too, since they go into the URL path as is.
+pub fn pre_end_action(name: &str, honor_finished: bool) -> PreEndAction {
+    if name.is_empty() {
+        return PreEndAction::Nothing;
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return PreEndAction::Leave;
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("mastery") || (lower.contains("honor") && honor_finished) {
+        PreEndAction::Complete
+    } else {
+        PreEndAction::Leave
+    }
 }
 
 /// The `gameId` a honor ballot belongs to; `None` when the ballot carries none.
@@ -450,6 +482,16 @@ mod tests {
         assert_eq!(honor_outcome(Some(3), 3, 2, max), HonorOutcome::Done);
         assert_eq!(honor_outcome(Some(0), 3, max, max), HonorOutcome::GiveUp);
         assert_eq!(honor_outcome(None, 3, 1, max), HonorOutcome::GiveUp);
+    }
+
+    #[test]
+    fn test_pre_end_screens_close_only_mastery_and_finished_honor() {
+        assert_eq!(pre_end_action("", true), PreEndAction::Nothing);
+        assert_eq!(pre_end_action("champion-mastery-celebration", false), PreEndAction::Complete);
+        assert_eq!(pre_end_action("honor-vote", true), PreEndAction::Complete);
+        assert_eq!(pre_end_action("honor-vote", false), PreEndAction::Leave);
+        assert_eq!(pre_end_action("tft-rewards", true), PreEndAction::Leave);
+        assert_eq!(pre_end_action("mastery/../x", true), PreEndAction::Leave);
     }
 
     #[test]

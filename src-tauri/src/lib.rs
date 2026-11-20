@@ -2084,6 +2084,14 @@ pub fn run() {
                                     try_auto_honor(&app_h2, &lcu_for_worker, &auto_queue_tracker)
                                         .await;
                                 }
+                                if phase == "PreEndOfGame"
+                                    && cfg.master_enabled
+                                    && (cfg.auto_play_again || cfg.auto_honor_party)
+                                    && mode_ok
+                                {
+                                    advance_pre_end_of_game(&app_h2, &lcu_for_worker, &auto_queue_tracker)
+                                        .await;
+                                }
                             }
                             "EndOfGame" => {
                                 if cfg.master_enabled && cfg.auto_start_queue && mode_ok {
@@ -2331,7 +2339,13 @@ async fn try_auto_honor(
             (outcome, _) => break (recorded, outcome),
         }
     };
-    tracker_lock.lock().await.honored_game_id = Some(game_id);
+    {
+        let mut tr = tracker_lock.lock().await;
+        tr.honored_game_id = Some(game_id);
+        if outcome == postgame::HonorOutcome::Done {
+            tr.honor_done_game_id = Some(game_id);
+        }
+    }
 
     // Leftover votes keep the client on the honor screen; submit the ballot
     // so play-again and the next queue can go on.
@@ -2376,6 +2390,81 @@ async fn try_auto_honor(
             ),
         }),
     );
+}
+
+/// Close the post-game screens the player has nothing to decide on: mastery
+/// level-ups, and the honor screen once every party honor landed (its leftover
+/// votes would otherwise hold it open for its whole timer). Polls while the
+/// client stays in `PreEndOfGame`; any other screen is logged once and left.
+async fn advance_pre_end_of_game(
+    app: &tauri::AppHandle,
+    lcu: &SharedLcu,
+    tracker_lock: &Arc<tokio::sync::Mutex<postgame::AutoQueueTracker>>,
+) {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+    const MAX_POLLS: u32 = 30;
+    const MAX_TRIES_PER_SCREEN: u32 = 3;
+    let mut last: Option<(String, u32)> = None;
+    for _ in 0..MAX_POLLS {
+        if lcu.fetch_gameflow_phase().await.as_deref() != Some("PreEndOfGame") {
+            return;
+        }
+        let Some(name) = lcu.fetch_pre_end_sequence_event().await else {
+            return;
+        };
+        let honor_finished = match lcu.fetch_honor_ballot().await {
+            Some(ballot) => {
+                let game_id = postgame::ballot_game_id(&ballot);
+                game_id.is_some() && tracker_lock.lock().await.honor_done_game_id == game_id
+            }
+            None => false,
+        };
+        match postgame::pre_end_action(&name, honor_finished) {
+            postgame::PreEndAction::Nothing => {}
+            postgame::PreEndAction::Leave => {
+                let _ = app.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": "skip",
+                        "title": "賽後畫面留給玩家",
+                        "reason": format!("目前畫面：{}", name),
+                    }),
+                );
+                return;
+            }
+            postgame::PreEndAction::Complete => {
+                let tries = match &last {
+                    Some((prev, n)) if *prev == name => n + 1,
+                    _ => 1,
+                };
+                if tries > MAX_TRIES_PER_SCREEN {
+                    let _ = app.emit(
+                        "lcu-log",
+                        serde_json::json!({
+                            "kind": "err",
+                            "title": "賽後畫面關不掉",
+                            "reason": format!("{} 送了 {} 次確認還在", name, MAX_TRIES_PER_SCREEN),
+                        }),
+                    );
+                    return;
+                }
+                let (kind, title, reply) = match lcu.complete_pre_end_sequence_event(&name).await {
+                    Ok(reply) => ("act", "已關閉賽後畫面", reply),
+                    Err(reply) => ("err", "關閉賽後畫面失敗", reply),
+                };
+                let _ = app.emit(
+                    "lcu-log",
+                    serde_json::json!({
+                        "kind": kind,
+                        "title": title,
+                        "reason": format!("{}：POST /lol-pre-end-of-game/v1/complete；回應：{}", name, reply),
+                    }),
+                );
+                last = Some((name, tries));
+            }
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 /// Run the auto start-queue automation for a lobby event / Lobby phase.
