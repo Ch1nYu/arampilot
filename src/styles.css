@@ -212,6 +212,9 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 .chk button { background: none; border: 1px solid var(--line2); color: var(--muted); padding: 5px 10px; border-radius: var(--radius-pill); font: inherit; font-size: 12px; cursor: pointer; transition: all .15s; }
 .chk button.on { border-color: var(--accent); color: var(--accent); }
 .chk button.on::before { content: "✓ "; }
+/* Auto-accept invites: status text beside the reload button; long friend lists scroll. */
+#inviteStatus { color: var(--muted); font-size: 11px; margin-left: 8px; }
+#cfgInviteFriends { max-height: 132px; overflow-y: auto; }
 .range { display: flex; align-items: center; gap: 10px; flex: none; }
 input[type=range] { -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 2px; outline: none; cursor: pointer; --tw: 14px; background: linear-gradient(to right, var(--accent) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw))), var(--line2) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw)))); }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); }

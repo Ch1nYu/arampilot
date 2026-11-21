@@ -113,6 +113,25 @@
         </div>
 
         <div class="card">
+          <div class="card-head"><h3>自動接受組隊邀請</h3><label class="sw"><input type="checkbox" data-gate="g-invite" id="cfgAutoAcceptInvites"><i></i></label></div>
+          <div class="rows" id="g-invite">
+            <div class="set-row">
+              <span class="set-lab">接受這些分組</span>
+              <span class="chk" data-chk id="cfgInviteGroups"></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">也接受這些好友</span>
+              <span class="chk" data-chk id="cfgInviteFriends"></span>
+            </div>
+            <div class="set-row">
+              <span class="set-lab">好友名單</span>
+              <span><button class="btn" id="inviteReload">重新讀取好友</button><span id="inviteStatus"></span></span>
+            </div>
+          </div>
+          <div class="hint">只在你沒有隊友、也不在排隊或對局時接受；只接受勾選的分組或好友，其他人的邀請不動</div>
+        </div>
+
+        <div class="card">
           <div class="card-head"><h3>開局選卡建議</h3><label class="sw"><input type="checkbox" checked data-gate="g-card" id="cfgAutoCard"><i></i></label></div>
           <div class="rows" id="g-card">
             <div class="set-row">

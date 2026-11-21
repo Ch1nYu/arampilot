@@ -30,6 +30,7 @@ import {
   syncFlashPool,
 } from "./battle";
 import { escapeHtml, img, reloadIcons } from "./html";
+import { mergeSelection, renderInvitePicker, type FriendDirectory } from "./invitePicker";
 import { addLog, initLogFilter } from "./logs";
 import {
   activeChkValues,
@@ -470,6 +471,7 @@ const SAVE_ON_CHANGE_IDS = [
   "cfgAutoPlayAgain",
   "cfgAutoStartQueue",
   "cfgAutoHonorParty",
+  "cfgAutoAcceptInvites",
 ];
 SAVE_ON_CHANGE_IDS.forEach((id) => {
   const el = document.getElementById(id) as HTMLInputElement | null;
@@ -545,6 +547,40 @@ initPriorityToolbar({ debouncedSaveConfig });
 /* ---------- General Settings: JSON Export / Import (src/configTransfer.ts) ---------- */
 initConfigTransfer({ collectConfig, applyConfigToUI, saveConfigImmediate });
 
+/* ---------- Auto-Accept Invites: Friend Picker ---------- */
+let inviteDirectory: FriendDirectory | null = null;
+// Saved values come from the config; shown values from the last directory
+// render (both empty before a load). mergeSelection keeps saved entries the
+// picker cannot show, so a save never drops a hidden selection.
+let savedInviteGroups: string[] = [];
+let savedInvitePuuids: string[] = [];
+let shownInviteGroups: string[] = [];
+let shownInvitePuuids: string[] = [];
+
+function setInviteStatus(text: string) {
+  const el = document.getElementById("inviteStatus");
+  if (el) el.textContent = text;
+}
+
+/** Load the friend directory from LCU and paint the chips; on failure keep the last good render. */
+async function loadInviteDirectory() {
+  try {
+    const dir = await invoke<FriendDirectory>("get_friend_directory");
+    inviteDirectory = dir;
+    shownInviteGroups = dir.groups.map((g) => g.name);
+    shownInvitePuuids = dir.friends.map((f) => f.puuid);
+    renderInvitePicker(dir, savedInviteGroups, savedInvitePuuids);
+    setInviteStatus(`共 ${dir.friends.length} 位好友`);
+  } catch (e) {
+    // The backend rejects with a message string when LoL is not connected.
+    const msg = String(e);
+    setInviteStatus(msg.includes("未連線") ? "LoL 用戶端未連線，連線後按「重新讀取好友」" : msg);
+  }
+}
+document.getElementById("inviteReload")?.addEventListener("click", () => {
+  void loadInviteDirectory();
+});
+
 /* ---------- Config Persistence (Debounced) ---------- */
 function collectConfig(): AppConfig {
   // Snapshot the visible form into the single shared settings/profile state.
@@ -578,6 +614,9 @@ function collectConfig(): AppConfig {
     auto_play_again: checkboxValue("cfgAutoPlayAgain", false),
     auto_start_queue: checkboxValue("cfgAutoStartQueue", false),
     auto_honor_party: checkboxValue("cfgAutoHonorParty", false),
+    auto_accept_invites: checkboxValue("cfgAutoAcceptInvites", false),
+    invite_friend_groups: mergeSelection(savedInviteGroups, shownInviteGroups, activeChkValues("cfgInviteGroups")),
+    invite_friend_puuids: mergeSelection(savedInvitePuuids, shownInvitePuuids, activeChkValues("cfgInviteFriends")),
     aram_settings: state.currentSettings,
     mayhem_settings: { ...state.currentSettings },
     auto_chat_on_swap: checkboxValue("cfgAutoChat", true),
@@ -625,7 +664,12 @@ async function saveConfigReport(): Promise<SaveResult> {
   // Every edit path funnels through here, so this is where the 未儲存 state is kept current.
   renderRankingSaveBar();
   try {
-    await invoke("save_app_config", { newConfig: collectConfig() });
+    const next = collectConfig();
+    await invoke("save_app_config", { newConfig: next });
+    // The chip containers only show the loaded directory; keep the merged
+    // values (hidden saved entries included) as the base for the next save.
+    savedInviteGroups = next.invite_friend_groups ?? [];
+    savedInvitePuuids = next.invite_friend_puuids ?? [];
     if (lastSaveError) addLog("sys", "設定已恢復正常寫入", "");
     lastSaveError = null;
     return "saved";
@@ -660,6 +704,7 @@ async function initLcuBackend() {
     updateConnectionUI(event.payload.connected, event.payload.port);
     if (event.payload.connected) {
       void loadChampionsFromLcu();
+      void loadInviteDirectory();
       void syncLivePhaseAndSession(true);
       addLog("sys", "LCU 已成功連線", `Port: ${event.payload.port || "未知"}`);
     } else {
@@ -752,7 +797,10 @@ async function pollLiveOverviewStatus(initial: boolean) {
     updateConnectionUI(status.connected, status.port);
     if (status.connected) {
       const fresh = initial || changedConn;
-      if (fresh) void loadChampionsFromLcu();
+      if (fresh) {
+        void loadChampionsFromLcu();
+        void loadInviteDirectory();
+      }
       // Champ select sessions arrive as lcu-event pushes; the periodic tick only
       // keeps the phase and queue label current (a lobby queue change has no event).
       await syncLivePhaseAndSession(fresh);
@@ -784,6 +832,11 @@ function applyConfigToUI(cfg: AppConfig) {
   setCheckbox("cfgAutoPlayAgain", cfg.auto_play_again ?? false);
   setCheckbox("cfgAutoStartQueue", cfg.auto_start_queue ?? false);
   setCheckbox("cfgAutoHonorParty", cfg.auto_honor_party ?? false);
+  setCheckbox("cfgAutoAcceptInvites", cfg.auto_accept_invites ?? false);
+  savedInviteGroups = Array.isArray(cfg.invite_friend_groups) ? cfg.invite_friend_groups : [];
+  savedInvitePuuids = Array.isArray(cfg.invite_friend_puuids) ? cfg.invite_friend_puuids : [];
+  // Chips exist only once a directory was loaded; re-tick them to the new lists.
+  if (inviteDirectory) renderInvitePicker(inviteDirectory, savedInviteGroups, savedInvitePuuids);
 
   state.currentSettings = normalizeModeSettings(cfg.aram_settings ?? cfg.mayhem_settings);
   writeModeSettingsToUI(state.currentSettings);
