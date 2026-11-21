@@ -11,20 +11,7 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": [
-      {
-        "label": "main",
-        "title": "ARAMPilot",
-        "width": 1040,
-        "height": 680,
-        "minWidth": 960,
-        "minHeight": 620,
-        "resizable": true,
-        "decorations": false,
-        "transparent": false,
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: http://icon.localhost; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: http://icon.localhost; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1421; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"

@@ -317,13 +317,92 @@ fn update_tray_status(
     let _ = handles.tray.set_tooltip(Some(&tooltip));
 }
 
-/// Bring the main window back from the tray.
+/// Fallback audible cue when the main webview is destroyed in tray mode.
+#[cfg(target_os = "windows")]
+fn play_native_alert_beep() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBeep(u_type: u32) -> i32;
+    }
+    // MB_ICONEXCLAMATION
+    unsafe {
+        let _ = MessageBeep(0x0000_0030);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn play_native_alert_beep() {}
+
+/// Bring the main window back from the tray, creating the WebView lazily if it
+/// was never opened (`--minimized`) or was destroyed when retreating to tray.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        return;
     }
+
+    let Ok(main_window) = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("ARAMPilot")
+    .inner_size(1040.0, 680.0)
+    .min_inner_size(960.0, 620.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(false)
+    .disable_drag_drop_handler()
+    .build()
+    else {
+        return;
+    };
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        let _ = main_window.set_icon(icon);
+    }
+
+    let ui_scale = app
+        .try_state::<SharedConfig>()
+        .and_then(|s| s.try_read().ok().map(|c| c.ui_scale))
+        .unwrap_or(1.0);
+    let _ = main_window.set_zoom(config::clamp_ui_scale(ui_scale));
+
+    let config_for_close = app.try_state::<SharedConfig>().map(|s| Arc::clone(s.inner()));
+    let window_for_close = main_window.clone();
+    let window_for_resize = main_window.clone();
+    let last_maximized = Arc::new(std::sync::atomic::AtomicBool::new(
+        main_window.is_maximized().unwrap_or(false),
+    ));
+    main_window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            let config_lock = config_for_close.clone();
+            let window = window_for_close.clone();
+            spawn(async move {
+                let close_to_tray = match config_lock {
+                    Some(lock) => lock.read().await.close_to_tray,
+                    None => true,
+                };
+                if close_to_tray {
+                    let _ = window.destroy();
+                } else {
+                    window.app_handle().exit(0);
+                }
+            });
+        }
+        tauri::WindowEvent::Resized(_) => {
+            let maximized = window_for_resize.is_maximized().unwrap_or(false);
+            if last_maximized.swap(maximized, std::sync::atomic::Ordering::Relaxed) != maximized {
+                let _ = window_for_resize.emit("window-maximized", maximized);
+            }
+        }
+        _ => {}
+    });
+
+    let _ = main_window.set_focus();
 }
 
 /// Apply one `toggle_*` click: flip the setting, persist it, and mirror it everywhere.
@@ -652,8 +731,8 @@ async fn dev_quit_champ_select(state: State<'_, SharedLcu>) -> Result<(), String
 
 #[tauri::command]
 fn minimize_window(window: tauri::Window) -> Result<(), String> {
-    // Minimizing retreats to the system tray so background automation keeps running.
-    window.hide().map_err(|e| e.to_string())
+    // Minimizing retreats to the system tray and destroys the webview to free WebView2 RAM.
+    window.destroy().map_err(|e| e.to_string())
 }
 
 /// Zoom the webview to `scale` (clamped like `AppConfig::sanitize`) and report the
@@ -713,7 +792,7 @@ fn append_exec_log(time: String, kind: String, title: String, reason: String) {
 #[tauri::command]
 async fn close_window(window: tauri::Window, state: State<'_, SharedConfig>) -> Result<(), String> {
     if state.read().await.close_to_tray {
-        window.hide().map_err(|e| e.to_string())
+        window.destroy().map_err(|e| e.to_string())
     } else {
         window.app_handle().exit(0);
         Ok(())
@@ -899,7 +978,6 @@ pub fn run() {
         config::sync_windows_auto_start(initial_config.auto_start);
     }
     let initial_config_for_tray = initial_config.clone();
-    let initial_ui_scale = initial_config.ui_scale;
     let shared_config: SharedConfig = Arc::new(RwLock::new(initial_config));
     let shared_account: SharedAccount = Arc::new(RwLock::new(None));
 
@@ -914,7 +992,6 @@ pub fn run() {
     let config_for_tray = Arc::clone(&shared_config);
     let account_for_status = Arc::clone(&shared_account);
     let account_for_worker = Arc::clone(&shared_account);
-    let config_for_close = Arc::clone(&shared_config);
 
     let live_poller = Arc::new(LiveGamePoller::new());
     let live_poller_for_events = Arc::clone(&live_poller);
@@ -968,50 +1045,11 @@ pub fn run() {
                 Arc::clone(&config_for_tray),
             )?;
 
-            // `--minimized` (used by the Windows Run key) starts hidden in the tray.
+            // `--minimized` (used by the Windows Run key) stays purely in the tray
+            // without spawning WebView2 until the user opens the window.
             let start_minimized = std::env::args().any(|arg| arg == "--minimized");
-            if let Some(main_window) = app.get_webview_window("main") {
-                if let Some(icon) = app.default_window_icon().cloned() {
-                    let _ = main_window.set_icon(icon);
-                }
-                if start_minimized {
-                    let _ = main_window.hide();
-                }
-
-                // Apply the saved display scale now that the webview exists.
-                let _ = main_window.set_zoom(config::clamp_ui_scale(initial_ui_scale));
-
-                // Closing the window retreats to the tray unless the user opted out.
-                let window_for_close = main_window.clone();
-                // Maximizing by snapping / Win+Up / double-click never goes through the
-                // frontend, so the title bar button learns the state from here.
-                let window_for_resize = main_window.clone();
-                let last_maximized = Arc::new(std::sync::atomic::AtomicBool::new(
-                    main_window.is_maximized().unwrap_or(false),
-                ));
-                main_window.on_window_event(move |event| match event {
-                    tauri::WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        let config_lock = Arc::clone(&config_for_close);
-                        let window = window_for_close.clone();
-                        spawn(async move {
-                            if config_lock.read().await.close_to_tray {
-                                let _ = window.hide();
-                            } else {
-                                window.app_handle().exit(0);
-                            }
-                        });
-                    }
-                    tauri::WindowEvent::Resized(_) => {
-                        let maximized = window_for_resize.is_maximized().unwrap_or(false);
-                        if last_maximized.swap(maximized, std::sync::atomic::Ordering::Relaxed)
-                            != maximized
-                        {
-                            let _ = window_for_resize.emit("window-maximized", maximized);
-                        }
-                    }
-                    _ => {}
-                });
+            if !start_minimized {
+                show_main_window(app.handle());
             }
 
             let app_handle = app.handle().clone();
@@ -1149,8 +1187,16 @@ pub fn run() {
                     {
                         let _ = clipboard.set_text("/ff");
                     }
-                    // The frontend logs this alert itself, so no duplicate `lcu-log`.
-                    let _ = app_h_alert.emit("lcu-ff-alert", &msg);
+                    // When the webview is destroyed in tray mode, fall back to a native beep
+                    // so the 8:00 reminder still signals audibly.
+                    if app_h_alert.get_webview_window("main").is_none() {
+                        if cfg.ff_play_sound {
+                            play_native_alert_beep();
+                        }
+                    } else {
+                        // The frontend logs this alert itself, so no duplicate `lcu-log`.
+                        let _ = app_h_alert.emit("lcu-ff-alert", &msg);
+                    }
                 }
             });
 
@@ -1406,10 +1452,17 @@ pub fn run() {
             toggle_maximize_window,
             append_exec_log
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|error| {
             fatal::show_error(&fatal::startup_error_text(&error.to_string()));
             std::process::exit(1);
+        })
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event
+                && code.is_none()
+            {
+                api.prevent_exit();
+            }
         });
 }
 
