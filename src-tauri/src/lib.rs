@@ -8,6 +8,7 @@ pub mod livegame;
 pub mod postgame;
 pub mod single_instance;
 mod bench;
+mod invites;
 
 use config::{AppConfig, ConfigManager, SaveError};
 use engine::{
@@ -526,6 +527,20 @@ async fn get_champ_select_ui_state(
     Ok(champ_select_ui_state(&tr))
 }
 
+/// Friend groups and friends for the auto-accept invite picker.
+#[tauri::command]
+async fn get_friend_directory(state: State<'_, SharedLcu>) -> Result<serde_json::Value, String> {
+    let friends = state
+        .fetch_friends()
+        .await
+        .ok_or_else(|| "LoL 用戶端未連線".to_string())?;
+    let groups = state
+        .fetch_friend_groups()
+        .await
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    Ok(invites::friend_directory(&friends, &groups))
+}
+
 /// Manually switch our summoner spells (D = `spell1_id`, F = `spell2_id`).
 #[tauri::command]
 async fn apply_summoner_spells(
@@ -1014,6 +1029,9 @@ pub fn run() {
             let rc_tracker_for_status = Arc::clone(&rc_tracker);
             // Post-game automations: auto play-again and auto start-queue.
             let auto_queue_tracker = Arc::new(tokio::sync::Mutex::new(postgame::AutoQueueTracker::default()));
+            // Invitation ids this run already sent an accept for, so a failed
+            // accept is not retried on every later event.
+            let invite_tried = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
 
             // Background task: forward LCU connection status to frontend
             let app_h1 = app_handle.clone();
@@ -1191,10 +1209,27 @@ pub fn run() {
                             )
                             .await;
                         }
+                    } else if event.uri == lcu::RECEIVED_INVITATIONS_URI {
+                        try_accept_invite(
+                            &app_h2,
+                            &lcu_for_worker,
+                            &config_for_worker,
+                            &invite_tried,
+                        )
+                        .await;
                     } else if event.uri == "/lol-gameflow/v1/gameflow-phase" {
                         let phase = event.data.as_str().unwrap_or("");
                         if phase == "None" || phase == "Lobby" {
                             reset_champ_select_tracker(&app_h2, &tracker).await;
+                            // An invitation that arrived during a game becomes
+                            // acceptable once the client is back to the lobby.
+                            try_accept_invite(
+                                &app_h2,
+                                &lcu_for_worker,
+                                &config_for_worker,
+                                &invite_tried,
+                            )
+                            .await;
                         }
                         // One queue lookup per phase change, shared by auto-accept, tray and ff reminder.
                         let queue_id = lcu_for_worker.fetch_current_queue_id().await;
@@ -1352,6 +1387,7 @@ pub fn run() {
             get_gameflow_phase,
             get_champ_select_session,
             get_champ_select_ui_state,
+            get_friend_directory,
             apply_summoner_spells,
             get_app_config,
             save_app_config,
@@ -1444,6 +1480,100 @@ async fn fill_party_from_game(
         tr.last_party_size = tr.last_party_size.max(party.len());
         tr.party_puuids = party;
         tr.own_puuid = Some(own);
+    }
+}
+
+/// Accept the oldest pending party invitation from a friend the user chose,
+/// but only while the player is idle (no game in progress). Each invitation id
+/// is tried once per run, so a failed accept is not retried on every event.
+///
+/// Logs nothing when nobody chose a friend, the player is busy, or no
+/// invitation matches: the automation must stay quiet when it has nothing to do.
+async fn try_accept_invite(
+    app: &tauri::AppHandle,
+    lcu: &SharedLcu,
+    config_lock: &SharedConfig,
+    tried: &Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+) {
+    let cfg = config_lock.read().await.clone();
+    // Off by default, and off as long as the user chose nobody.
+    if !(cfg.master_enabled
+        && cfg.auto_accept_invites
+        && !(cfg.invite_friend_groups.is_empty() && cfg.invite_friend_puuids.is_empty()))
+    {
+        return;
+    }
+
+    let Some(phase) = lcu.fetch_gameflow_phase().await else {
+        return;
+    };
+    let members = match phase.as_str() {
+        "Lobby" => lcu.fetch_lobby().await.and_then(|lobby| {
+            lobby
+                .get("members")
+                .and_then(|members| members.as_array())
+                .map(|members| members.len())
+        }),
+        _ => None,
+    };
+    if !invites::idle_for_invite(&phase, members) {
+        return;
+    }
+
+    let Some(invitations) = lcu.fetch_received_invitations().await else {
+        return;
+    };
+    let Some(friends) = lcu.fetch_friends().await else {
+        return;
+    };
+    let picked = {
+        let mut tried = tried.lock().await;
+        // Leftovers of a long session must not grow without bound.
+        if tried.len() > 100 {
+            tried.clear();
+        }
+        let picked = invites::pick_invitation(
+            &invitations,
+            &friends,
+            &cfg.invite_friend_groups,
+            &cfg.invite_friend_puuids,
+            &tried,
+        );
+        // Insert before the send: a second event must not send the same accept.
+        if let Some((id, _)) = &picked {
+            tried.insert(id.clone());
+        }
+        picked
+    };
+    let Some((id, sender)) = picked else {
+        return;
+    };
+
+    match lcu.accept_invitation(&id).await {
+        Ok(()) => {
+            let _ = app.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "act",
+                    "title": "已自動接受組隊邀請",
+                    "reason": format!(
+                        "{} 的邀請：POST {}/{{id}}/accept",
+                        sender,
+                        lcu::RECEIVED_INVITATIONS_URI
+                    ),
+                }),
+            );
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "lcu-log",
+                serde_json::json!({
+                    "kind": "err",
+                    "title": "自動接受組隊邀請失敗",
+                    "reason": e,
+                }),
+            );
+        }
     }
 }
 

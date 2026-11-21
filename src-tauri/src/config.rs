@@ -192,6 +192,13 @@ pub struct AppConfig {
     /// Opt-in: after an ARAM/Mayhem game, honor every premade party ally
     /// from the post-game ballot (must run before auto play-again).
     pub auto_honor_party: bool,
+    /// Opt-in: accept a pending party invitation from a chosen friend while idle.
+    pub auto_accept_invites: bool,
+    /// Friend group names exactly as LCU reports them (e.g. `**Default`) whose
+    /// members count as chosen friends.
+    pub invite_friend_groups: Vec<String>,
+    /// Puuids of the friends whose invitations are accepted.
+    pub invite_friend_puuids: Vec<String>,
 
     // Mode-specific automation settings
     pub aram_settings: ModeSettings,
@@ -270,6 +277,9 @@ impl Default for AppConfig {
             auto_play_again: false,
             auto_start_queue: false,
             auto_honor_party: false,
+            auto_accept_invites: false,
+            invite_friend_groups: Vec::new(),
+            invite_friend_puuids: Vec::new(),
             aram_settings: ModeSettings::default(),
             mayhem_settings: ModeSettings::default(),
             auto_chat_on_swap: true,
@@ -357,7 +367,27 @@ impl AppConfig {
         self.aram_profile = unified.clone();
         self.mayhem_profile = unified;
         sanitize_ranking_saves(&mut self.ranking_saves);
+        sanitize_name_list(&mut self.invite_friend_groups, MAX_INVITE_LIST);
+        sanitize_name_list(&mut self.invite_friend_puuids, MAX_INVITE_LIST);
     }
+}
+
+/// Most entries kept in each friend selection list; the picker never shows
+/// more than the friend list itself.
+const MAX_INVITE_LIST: usize = 200;
+
+/// Trim, drop empty entries and dedupe a friend selection list, keeping order.
+fn sanitize_name_list(list: &mut Vec<String>, cap: usize) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    list.retain_mut(|entry| {
+        let trimmed = entry.trim().to_string();
+        if trimmed.is_empty() {
+            return false;
+        }
+        *entry = trimmed;
+        seen.insert(entry.clone())
+    });
+    list.truncate(cap);
 }
 
 /// Drop saves without an id and duplicate ids, trim and cap names, clean each
@@ -1317,6 +1347,45 @@ mod tests {
         assert!(!legacy.auto_start_queue);
         assert!(!legacy.auto_honor_party);
         assert!(legacy.auto_accept);
+    }
+
+    #[test]
+    fn test_auto_accept_invites_is_opt_in() {
+        let cfg = AppConfig::default();
+        assert!(!cfg.auto_accept_invites);
+        assert!(cfg.invite_friend_groups.is_empty());
+        assert!(cfg.invite_friend_puuids.is_empty());
+        // A config written before these fields existed must load with the
+        // automation off and nobody chosen.
+        let legacy: AppConfig = serde_json::from_str(r#"{"auto_accept": true}"#).unwrap();
+        assert!(!legacy.auto_accept_invites);
+        assert!(legacy.invite_friend_groups.is_empty());
+        assert!(legacy.invite_friend_puuids.is_empty());
+        assert!(legacy.auto_accept);
+    }
+
+    #[test]
+    fn test_sanitize_cleans_friend_selection_lists() {
+        let mut cfg = AppConfig {
+            invite_friend_groups: vec![
+                "  **Default ".to_string(),
+                "**Default".to_string(),
+                String::new(),
+                "   ".to_string(),
+                "ARAM 好友".to_string(),
+            ],
+            invite_friend_puuids: [" puuid-a ", "puuid-a", "puuid-b"]
+                .iter()
+                .map(|s| s.to_string())
+                .chain((0..MAX_INVITE_LIST).map(|i| format!("x-{i}")))
+                .collect(),
+            ..Default::default()
+        };
+        cfg.sanitize();
+        assert_eq!(cfg.invite_friend_groups, vec!["**Default", "ARAM 好友"]);
+        assert_eq!(cfg.invite_friend_puuids.len(), MAX_INVITE_LIST);
+        assert_eq!(cfg.invite_friend_puuids[0], "puuid-a");
+        assert_eq!(cfg.invite_friend_puuids[1], "puuid-b");
     }
 
     #[test]

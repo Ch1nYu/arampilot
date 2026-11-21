@@ -20,6 +20,10 @@ pub const TRADE_UNCONFIRMED: &str = "LCU 未確認換角已完成";
 /// What every LCU call answers when no client is connected.
 const NOT_CONNECTED: &str = "LCU not connected";
 
+/// Incoming party invitations. A new one, and a phase change back to `None` /
+/// `Lobby`, makes the auto-accept check look again.
+pub const RECEIVED_INVITATIONS_URI: &str = "/lol-lobby/v2/received-invitations";
+
 /// What one swap-accept route answered.
 #[derive(Debug, Clone, Copy)]
 enum RouteReply {
@@ -1114,6 +1118,37 @@ impl LcuManager {
         self.get_json_opt("/lol-lobby/v2/lobby").await
     }
 
+    /// Pending party invitations (`invitationId`, sender, `state`, `timestamp`).
+    pub async fn fetch_received_invitations(&self) -> Option<serde_json::Value> {
+        self.get_json_opt(RECEIVED_INVITATIONS_URI).await
+    }
+
+    /// `/lol-chat/v1/friends`: `puuid`, `summonerId`, `gameName`, `gameTag`, `groupName`.
+    pub async fn fetch_friends(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-chat/v1/friends").await
+    }
+
+    /// `/lol-chat/v1/friend-groups`: `id`, `name`, `priority`.
+    pub async fn fetch_friend_groups(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-chat/v1/friend-groups").await
+    }
+
+    /// Accept one party invitation by its `invitationId`.
+    pub async fn accept_invitation(&self, id: &str) -> Result<(), String> {
+        self.ensure_connected().await?;
+        // The id goes into the path, so anything that could change the path
+        // (a `/`, a query, a percent escape) is refused instead of sent.
+        let valid = !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid {
+            return Err(format!("無效的邀請 ID：{id}"));
+        }
+        let path = format!("{}/{}/accept", RECEIVED_INVITATIONS_URI, id);
+        self.send_unit(reqwest::Method::POST, &path, None).await
+    }
+
     /// `/lol-gameflow/v1/session`; its `gameData` lists both teams with premade groups.
     pub async fn fetch_gameflow_session(&self) -> Option<serde_json::Value> {
         self.get_json_opt("/lol-gameflow/v1/session").await
@@ -1328,14 +1363,15 @@ fn format_http_reply(status: u16, body: &str) -> String {
 /// switches while the LCU connection stays up (no reconnect, no status event);
 /// the lobby URI lets the auto start-queue notice the party coming back.
 fn is_forwarded_event_uri(uri: &str) -> bool {
-    matches!(
-        uri,
-        "/lol-gameflow/v1/gameflow-phase"
-            | "/lol-matchmaking/v1/ready-check"
-            | "/lol-champ-select/v1/session"
-            | "/lol-summoner/v1/current-summoner"
-            | "/lol-lobby/v2/lobby"
-    )
+    uri == RECEIVED_INVITATIONS_URI
+        || matches!(
+            uri,
+            "/lol-gameflow/v1/gameflow-phase"
+                | "/lol-matchmaking/v1/ready-check"
+                | "/lol-champ-select/v1/session"
+                | "/lol-summoner/v1/current-summoner"
+                | "/lol-lobby/v2/lobby"
+        )
 }
 
 fn is_league_client_process(name: &str) -> bool {
@@ -1381,6 +1417,8 @@ mod tests {
         // auto start-queue check (2026-11-18 games).
         assert!(is_forwarded_event_uri("/lol-lobby/v2/lobby"));
         assert!(is_forwarded_event_uri("/lol-champ-select/v1/session"));
+        assert!(is_forwarded_event_uri(RECEIVED_INVITATIONS_URI));
+        assert!(is_forwarded_event_uri("/lol-lobby/v2/received-invitations"));
         assert!(!is_forwarded_event_uri("/lol-chat/v1/conversations"));
     }
 

@@ -89,6 +89,9 @@ export interface AppConfig {
   auto_play_again?: boolean;
   auto_start_queue?: boolean;
   auto_honor_party?: boolean;
+  auto_accept_invites?: boolean;
+  invite_friend_groups?: string[];
+  invite_friend_puuids?: string[];
   aram_settings: ModeSettings;
   mayhem_settings: ModeSettings;
   auto_chat_on_swap: boolean;
