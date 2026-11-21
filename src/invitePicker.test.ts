@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { groupLabel, mergeSelection } from "./invitePicker";
+import { friendMatchesQuery, groupLabel, mergeSelection } from "./invitePicker";
+
+describe("friendMatchesQuery", () => {
+  it("matches a substring regardless of case", () => {
+    expect(friendMatchesQuery("Faker#KR1", "fak")).toBe(true);
+  });
+
+  it("rejects a name without the query", () => {
+    expect(friendMatchesQuery("Faker#KR1", "zed")).toBe(false);
+  });
+
+  it("matches everyone on a blank query", () => {
+    expect(friendMatchesQuery("Faker#KR1", "  ")).toBe(true);
+  });
+});
 
 describe("groupLabel", () => {
   it("maps the LCU catch-all group to 未分組", () => {

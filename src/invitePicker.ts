@@ -40,6 +40,22 @@ export function mergeSelection(saved: string[], shown: string[], selectedShown: 
   return out;
 }
 
+/** Case-insensitive substring match of a friend name; a blank query matches everyone. */
+export function friendMatchesQuery(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return q === "" || name.toLowerCase().includes(q);
+}
+
+/**
+ * Hide friend chips whose label does not match the query. Hidden chips keep
+ * their "on" class, so ticked friends stay selected while filtered out.
+ */
+export function filterInviteFriends(query: string): void {
+  document.querySelectorAll<HTMLElement>("#cfgInviteFriends button").forEach((b) => {
+    b.hidden = !friendMatchesQuery(b.textContent || "", query);
+  });
+}
+
 /**
  * Fill both chip containers from the directory; a chip is pre-ticked when its
  * value is in the saved list. Friend names and puuids are user-controlled, so
@@ -57,4 +73,6 @@ export function renderInvitePicker(dir: FriendDirectory, savedGroups: string[], 
   friendsEl.innerHTML = dir.friends
     .map((f) => chip(f.puuid, f.name, savedPuuids.includes(f.puuid)))
     .join("");
+  const search = document.getElementById("inviteSearch") as HTMLInputElement | null;
+  if (search) filterInviteFriends(search.value);
 }

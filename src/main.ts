@@ -30,7 +30,7 @@ import {
   syncFlashPool,
 } from "./battle";
 import { escapeHtml, img, reloadIcons } from "./html";
-import { mergeSelection, renderInvitePicker, type FriendDirectory } from "./invitePicker";
+import { filterInviteFriends, mergeSelection, renderInvitePicker, type FriendDirectory } from "./invitePicker";
 import { addLog, initLogFilter } from "./logs";
 import {
   activeChkValues,
@@ -579,6 +579,9 @@ async function loadInviteDirectory() {
 }
 document.getElementById("inviteReload")?.addEventListener("click", () => {
   void loadInviteDirectory();
+});
+document.getElementById("inviteSearch")?.addEventListener("input", (e) => {
+  filterInviteFriends((e.target as HTMLInputElement).value);
 });
 
 /* ---------- Config Persistence (Debounced) ---------- */
