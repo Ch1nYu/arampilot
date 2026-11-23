@@ -7,6 +7,8 @@ import { TIER_ORDER } from "./tiers";
 import type { SaveResult } from "./saveResult";
 import type { TierChampion } from "./types";
 import { backupStamp } from "./backup";
+import { binaryAct, initBinaryUi, resetBinaryState, syncBinaryPool, undoBinary } from "./binaryUi";
+import type { BinaryAction } from "./binarySort";
 
 /** Hooks that stay in main.ts and are handed over once by `initBattle`. */
 export interface BattleDeps {
@@ -17,7 +19,7 @@ export interface BattleDeps {
 let deps: BattleDeps;
 
 /* ---------- Two-Stage Classifier & Pairwise PK Engine ---------- */
-type BattleStage = "flash" | "pk";
+type BattleStage = "flash" | "pk" | "binary";
 let currentBattleStage: BattleStage = "flash";
 let flashScope: "unranked" | "all" = "unranked";
 let pkTargetScope = "本命";
@@ -49,16 +51,20 @@ export function resetFlashState() {
   flashSkippedIds.clear();
   flashSeenAllIds.clear();
   flashUndoHistory = [];
+  resetBinaryState();
 }
 
 function setBattleStage(stage: BattleStage) {
   currentBattleStage = stage;
   const flashWrap = document.getElementById("btFlashWrap");
   const pkWrap = document.getElementById("btPkWrap");
+  const binaryWrap = document.getElementById("btBinaryWrap");
   if (flashWrap) flashWrap.style.display = stage === "flash" ? "" : "none";
   if (pkWrap) pkWrap.style.display = stage === "pk" ? "" : "none";
+  if (binaryWrap) binaryWrap.style.display = stage === "binary" ? "" : "none";
   if (stage === "flash") syncFlashPool();
-  else syncBattlePool();
+  else if (stage === "pk") syncBattlePool();
+  else syncBinaryPool();
 }
 
 export function syncFlashPool() {
@@ -719,6 +725,8 @@ function activateHeroTab(tab: HeroTab) {
  */
 export function initBattle(d: BattleDeps) {
   deps = d;
+  // The binary tab keeps its own state and listeners; it gets the same deps as this module.
+  initBinaryUi(d);
 
   document.getElementById("flashGoPk")?.addEventListener("click", () => {
     activateHeroTab("pk");
@@ -816,7 +824,7 @@ export function initBattle(d: BattleDeps) {
 
   document.querySelector(".hero-tabs-row")?.addEventListener("click", (e) => {
     const tab = ((e.target as HTMLElement).closest("[data-hero-tab]") as HTMLElement | null)?.dataset.heroTab;
-    if (tab === "priority" || tab === "flash" || tab === "pk") activateHeroTab(tab);
+    if (tab === "priority" || tab === "flash" || tab === "pk" || tab === "binary") activateHeroTab(tab);
   });
 
   document.addEventListener("keydown", (e) => {
@@ -846,6 +854,24 @@ export function initBattle(d: BattleDeps) {
       } else if (e.key === "Backspace") {
         e.preventDefault();
         undoFlashCard();
+      }
+      return;
+    }
+
+    if (currentBattleStage === "binary") {
+      const binaryKeys: Record<string, BinaryAction> = {
+        ArrowLeft: "challenger",
+        ArrowRight: "pivot",
+        ArrowUp: "tie",
+        " ": "top",
+        ArrowDown: "bottom",
+      };
+      if (binaryKeys[e.key]) {
+        e.preventDefault();
+        binaryAct(binaryKeys[e.key]);
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        undoBinary();
       }
       return;
     }

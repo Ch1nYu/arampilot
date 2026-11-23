@@ -264,6 +264,7 @@
           <div class="tabs" id="heroMethodTabs">
             <span data-hero-tab="flash">閃卡五分類</span>
             <span data-hero-tab="pk">階層內二選一</span>
+            <span data-hero-tab="binary">二分法排序</span>
           </div>
         </div>
 
@@ -361,6 +362,33 @@
                 <button class="btn primary" id="btPreviewConfirm">確認套用</button>
                 <button class="btn" id="btPreviewCancel">取消</button>
               </div>
+            </div>
+          </div>
+
+          <div id="btBinaryWrap" style="display:none">
+            <div class="toolbar" style="margin-bottom:10px">
+              <div class="seg" id="binaryTierSeg">
+                <button class="on" data-tier="本命">本命</button>
+                <button data-tier="愛角">愛角</button>
+                <button data-tier="順手">順手</button>
+                <button data-tier="勉強">勉強</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="bt-top"><span class="card-desc" style="margin:0" id="binaryProgressText">準備中...</span><div class="progress"><i id="binaryProgressBar"></i></div></div>
+              <div class="vs">
+                <div class="fighter" id="binL"></div>
+                <div class="vs-mid">VS</div>
+                <div class="fighter" id="binR"></div>
+              </div>
+              <div class="bt-actions">
+                <button class="btn" id="binUndo" title="復原上一次對決選擇">復原 <span class="var">Backspace</span></button>
+                <button class="btn" id="binTie">差不多 <span class="var">↑</span></button>
+                <button class="btn" id="binTop">排本層第 1 <span class="var">Space</span></button>
+                <button class="btn" id="binBottom">丟到本層最後 <span class="var">↓</span></button>
+                <button class="btn" id="binRestart" title="把這個階層重新用二分法從頭排一次">↺ 重排本層</button>
+              </div>
+              <div class="card-desc" style="margin-top:12px">每次只比兩隻：左邊是要排的英雄，右邊是目前區間正中間的英雄。選完範圍砍半，通常 3～6 下就能定位一隻。每一下都會直接改優先序並自動儲存。</div>
             </div>
           </div>
         </div>
