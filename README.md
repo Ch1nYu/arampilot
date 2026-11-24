@@ -131,7 +131,6 @@ pnpm tauri build                                # 產生安裝檔
 | `src/overview.ts`、`src/battle.ts`、`src/heroPage.ts`、`src/rankingSaveBar.ts`、`src/updaterUi.ts`、`src/configTransfer.ts` | 各頁面的介面與互動，由 `main.ts` 以 `init…(deps)` 啟動 |
 | `src/state.ts` | 跨頁面共用的狀態 |
 | 其餘 `src/*.ts` | 可單獨測試的純邏輯與小工具（`*.test.ts` 為 vitest 測試） |
-| `mockups/algo-lab.html` | 排序工作台（網頁版排序工具，搭配 `mockups/autosave_server.py`） |
 
 給程式 agent 的規則在 [AGENTS.md](AGENTS.md)。
 

@@ -23,12 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# Algo-lab working data written by mockups/autosave_server.py (kept on disk, not versioned)
-/sorting-autosave.json
-/aram-assistant-sorted-latest.json
-/aram-assistant-sorted-194rounds.json
-/aram-assistant-backup.json
-
 # Python bytecode
 __pycache__/
 *.pyc
