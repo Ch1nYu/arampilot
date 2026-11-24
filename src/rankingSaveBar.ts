@@ -1,4 +1,3 @@
-import { backupBeforeBulkEdit } from "./backup";
 import { choiceDialog, confirmDialog, promptDialog } from "./dialogs";
 import { escapeHtml } from "./html";
 import { addLog } from "./logs";
@@ -200,9 +199,9 @@ async function deleteRankingSave() {
     ? "畫面上未儲存的修改也會一併捨棄。"
     : "";
   const draftNote = draftVotes > 0 ? `另有 ${draftVotes} 票二選一草稿尚未套用，會一併捨棄。` : "";
-  const body = `這份存檔的排序、標記與二選一權重會刪除，改用「${next.name}」。${dirtyNote}${draftNote}刪除前會先自動備份到 backups/。`;
-  if (!(await confirmDialog(`刪除排序存檔「${save.name}」？`, body, "備份並刪除"))) return;
-  if (!(await backupBeforeBulkEdit("delete-ranking-save", "刪除存檔"))) return;
+  const body = `這份存檔的排序、標記與二選一權重會刪除，改用「${next.name}」。${dirtyNote}${draftNote}刪除後無法復原。`;
+  // Deleting a save the user no longer wants leaves nothing behind: no backup file.
+  if (!(await confirmDialog(`刪除排序存檔「${save.name}」？`, body, "刪除"))) return;
   if (draftVotes > 0) resetDraft();
   state.rankingSaves = remaining;
   // Load the next save the way 切換 does, but without capturing the deleted one.
