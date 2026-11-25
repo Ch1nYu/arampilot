@@ -46,7 +46,7 @@ describe("deleting a ranking save", () => {
     state.profileList = [{ id: 1, n: "A", t: "本命", f: "" }];
     state.rankingSaves = [
       { id: "a", name: "tmp", items: [{ id: 1, name: "A", tier: "本命", flag: "" }] },
-      { id: "b", name: "Gua", items: [{ id: 1, name: "A", tier: "愛角", flag: "" }] },
+      { id: "b", name: "main", items: [{ id: 1, name: "A", tier: "愛角", flag: "" }] },
     ];
     state.activeRankingSave = "a";
   });
