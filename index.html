@@ -396,9 +396,11 @@
 
       <!-- 紀錄 -->
       <section class="page" id="p-log">
-        <div class="page-head"><div><h1>執行紀錄</h1></div>
+        <div class="page-head"><h1>紀錄</h1>
+          <div class="seg" id="logView"><button class="on" data-v="matches">對戰</button><button data-v="exec">執行紀錄</button></div>
           <div class="seg" data-seg id="logFilter"><button class="on" data-v="all">全部</button><button data-v="act">已執行</button><button data-v="skip">略過</button><button data-v="err">錯誤</button></div></div>
-        <div class="card"><div class="log" id="logFull"></div></div>
+        <div class="card" id="matchView"><div id="matchList"></div></div>
+        <div class="card" id="execView" style="display:none"><div class="log" id="logFull"></div></div>
       </section>
 
       <!-- 設定 -->

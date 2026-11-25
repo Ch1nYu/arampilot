@@ -32,6 +32,7 @@ import {
 import { escapeHtml, img, reloadIcons } from "./html";
 import { filterInviteFriends, mergeSelection, renderInvitePicker, type FriendDirectory } from "./invitePicker";
 import { addLog, initLogFilter } from "./logs";
+import { initMatchHistory } from "./matchHistory";
 import {
   activeChkValues,
   activeSegValue,
@@ -451,6 +452,7 @@ document.addEventListener("keydown", (e) => {
 
 /* ---------- Log Engine ---------- */
 initLogFilter();
+initMatchHistory();
 
 /* ---------- Overview Tiles ---------- */
 // Tiles were removed from the overview per user feedback (duplicated by the

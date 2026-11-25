@@ -519,3 +519,17 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .spell-mem-row .spell-ic { width: 20px; height: 20px; border-radius: 4px; }
 .spell-mem-row .sp { color: var(--muted); min-width: 40px; }
 .btn.mini { padding: 2px 8px; font-size: 11px; }
+
+/* 紀錄 page, 對戰 view: one line per game, that game's log lines expand below it. */
+.match { border-top: 1px solid var(--line); }
+.match:first-child { border-top: 0; }
+.match summary { display: grid; grid-template-columns: 84px 64px minmax(0, 1fr) 52px minmax(0, 2fr); gap: 10px; align-items: center; padding: 8px 0; font-size: 12px; cursor: pointer; list-style: none; }
+.match summary::-webkit-details-marker { display: none; }
+.match .t { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.match .champ, .match .acts { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match .acts { color: var(--muted); }
+.res.win { color: var(--ok); }
+.res.loss { color: var(--danger); }
+.res.other { color: var(--muted); }
+.match > .log { padding: 0 0 8px 12px; }
+.match[open] summary { color: var(--text); }
