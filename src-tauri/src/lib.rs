@@ -9,6 +9,7 @@ pub mod postgame;
 pub mod single_instance;
 mod bench;
 mod invites;
+mod match_history;
 
 use config::{AppConfig, ConfigManager, SaveError};
 use engine::{
