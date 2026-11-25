@@ -719,7 +719,7 @@ async function initLcuBackend() {
   });
 
   await listen<{ kind: "act" | "skip" | "sys" | "err"; title: string; reason: string }>("lcu-log", (event) => {
-    addLog(event.payload.kind, event.payload.title, event.payload.reason);
+    addLog(event.payload.kind, event.payload.title, event.payload.reason, false);
   });
 
   await listen<string>("lcu-ff-alert", (event) => {

@@ -22,7 +22,7 @@ use std::time::Instant;
 use tauri::async_runtime::spawn;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, State, Wry};
+use tauri::{Emitter, Listener, Manager, State, Wry};
 use tokio::sync::RwLock;
 
 type SharedLcu = Arc<LcuManager>;
@@ -776,17 +776,86 @@ fn append_line_rotating(path: &std::path::Path, line: &str, max_bytes: u64) -> s
     writeln!(f, "{}", line)
 }
 
-#[tauri::command]
-fn append_exec_log(time: String, kind: String, title: String, reason: String) {
-    let dir = config::app_data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let line = serde_json::json!({
+/// Local wall-clock date (`YYYY-MM-DD`) and time (`HH:MM:SS`).
+#[cfg(target_os = "windows")]
+fn local_date_time() -> (String, String) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(out: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    unsafe { GetLocalTime(&mut t) };
+    (
+        format!("{:04}-{:02}-{:02}", t.year, t.month, t.day),
+        format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second),
+    )
+}
+
+/// The app only ships for Windows; other builds log without a timestamp.
+#[cfg(not(target_os = "windows"))]
+fn local_date_time() -> (String, String) {
+    (String::new(), String::new())
+}
+
+/// One `exec-log.jsonl` line.
+fn exec_log_line(date: &str, time: &str, kind: &str, title: &str, reason: &str) -> String {
+    serde_json::json!({
+        "date": date,
         "time": time,
         "kind": kind,
         "title": title,
         "reason": reason,
+    })
+    .to_string()
+}
+
+fn exec_log_path() -> std::path::PathBuf {
+    config::app_data_dir().join("exec-log.jsonl")
+}
+
+fn write_exec_log(path: &std::path::Path, date: &str, time: &str, kind: &str, title: &str, reason: &str) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = exec_log_line(date, time, kind, title, reason);
+    let _ = append_line_rotating(path, &line, EXEC_LOG_MAX_BYTES);
+}
+
+/// `(kind, title, reason)` of an `lcu-log` event payload; `None` when it is not one.
+fn lcu_log_fields(payload: &str) -> Option<(String, String, String)> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+    Some((field("kind")?, field("title")?, field("reason").unwrap_or_default()))
+}
+
+/// Backend log lines are written here, not by the frontend: the main WebView is
+/// destroyed while the app sits in the tray, and its lines would be lost.
+fn persist_backend_logs<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: std::path::PathBuf) {
+    app.listen("lcu-log", move |event| {
+        if let Some((kind, title, reason)) = lcu_log_fields(event.payload()) {
+            let (date, time) = local_date_time();
+            write_exec_log(&path, &date, &time, &kind, &title, &reason);
+        }
     });
-    let _ = append_line_rotating(&dir.join("exec-log.jsonl"), &line.to_string(), EXEC_LOG_MAX_BYTES);
+}
+
+/// Frontend-originated log lines (the backend's own are written by `persist_backend_logs`).
+#[tauri::command]
+fn append_exec_log(time: String, kind: String, title: String, reason: String) {
+    let (date, _) = local_date_time();
+    write_exec_log(&exec_log_path(), &date, &time, &kind, &title, &reason);
 }
 
 #[tauri::command]
@@ -1033,6 +1102,7 @@ pub fn run() {
             });
         })
         .setup(move |app| {
+            persist_backend_logs(app.handle(), exec_log_path());
             dev_restart::cleanup_old_exe_on_startup();
             if let single_instance::Instance::Primary(listener, earlier) = instance {
                 let handle = app.handle().clone();
@@ -3046,7 +3116,7 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, champ_select_phase, is_card_pick_still_pending,
+        SaveConfigError, append_line_rotating, lcu_log_fields, local_date_time, write_exec_log, champ_select_phase, is_card_pick_still_pending,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs,
         validate_trade_chat_text,
     };
@@ -3068,6 +3138,35 @@ mod tests {
         .unwrap();
         assert_eq!(failed["kind"], "writeFailed");
         assert_eq!(failed["message"], "access denied");
+    }
+
+    #[test]
+    fn test_exec_log_line_carries_date_and_time() {
+        let dir = std::env::temp_dir().join(format!("lolafk-backendlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("exec-log.jsonl");
+        let (date, time) = local_date_time();
+        write_exec_log(&path, &date, &time, "act", "已自動換成板凳英雄", "測試");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(line["kind"], "act");
+        assert_eq!(line["title"], "已自動換成板凳英雄");
+        assert_eq!(line["reason"], "測試");
+        let date = line["date"].as_str().unwrap();
+        assert!(regex::Regex::new(r"^20\d{2}-\d{2}-\d{2}$").unwrap().is_match(date), "{date}");
+        let time = line["time"].as_str().unwrap();
+        assert!(regex::Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap().is_match(time), "{time}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lcu_log_fields_needs_kind_and_title() {
+        assert_eq!(
+            lcu_log_fields(r#"{"kind":"sys","title":"t"}"#),
+            Some(("sys".into(), "t".into(), String::new()))
+        );
+        assert_eq!(lcu_log_fields(r#"{"title":"t"}"#), None);
+        assert_eq!(lcu_log_fields("not json"), None);
     }
 
     #[test]

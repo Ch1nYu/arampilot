@@ -14,13 +14,14 @@ export function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-export function addLog(kind: "act" | "skip" | "sys" | "err", title: string, reason: string) {
+/** `persist: false` for backend lines, which the backend already wrote to `exec-log.jsonl`. */
+export function addLog(kind: "act" | "skip" | "sys" | "err", title: string, reason: string, persist = true) {
   const now = new Date();
   const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
   logHistory.unshift({ time, kind, title, reason });
   if (logHistory.length > 80) logHistory.pop();
   renderLogs();
-  invoke("append_exec_log", { time, kind, title, reason }).catch(() => {});
+  if (persist) invoke("append_exec_log", { time, kind, title, reason }).catch(() => {});
 }
 export function renderLogs() {
   const toHtml = (r: LogRow) => `
