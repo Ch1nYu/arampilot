@@ -18,13 +18,13 @@ pass.
    account identifiers (`puuid`s), user names, home-directory paths, process
    IDs, port numbers, and session timestamps. Expected result: zero matches.
 2. **Gameplay data scrub** — any embedded example rankings or seeds (for
-   example in `mockups/algo-lab.html`) must use neutral fixture data, not a
+   example in `src/*.test.ts` fixtures) must use neutral fixture data, not a
    real player's history.
 3. **Secrets** — no tokens, no `.env`, no LCU lockfiles, no credentials
    anywhere in the tree. Runtime config lives outside the repo
    (`%APPDATA%` on Windows) and is never committed.
 4. **Ignored artifacts** — confirm `.gitignore` covers `node_modules`,
-   `dist`, `src-tauri/target`, lab working JSON, and `__pycache__`; confirm
+   `dist`, `src-tauri/target`, and `__pycache__`; confirm
    with `git ls-files` that only source, config, and docs are tracked.
 5. **Build check** — in the new repo, `cargo test --manifest-path
    src-tauri/Cargo.toml --lib` passes and `pnpm tsc --noEmit && pnpm build`
