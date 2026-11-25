@@ -6,7 +6,6 @@
 //! are filled in afterwards from the LoL client's match-history JSON. Nothing
 //! here touches Tauri, the network or globals; the JSONL helpers at the bottom
 //! are driven explicitly by the caller.
-#![allow(dead_code)] // wired into lib.rs in the next slice
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;

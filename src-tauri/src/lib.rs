@@ -832,6 +832,147 @@ fn write_exec_log(path: &std::path::Path, date: &str, time: &str, kind: &str, ti
     }
     let line = exec_log_line(date, time, kind, title, reason);
     let _ = append_line_rotating(path, &line, EXEC_LOG_MAX_BYTES);
+    if let Ok(mut matches) = MATCHES.lock() {
+        matches.record_log(match_history::LogLine {
+            date: date.to_string(),
+            time: time.to_string(),
+            kind: kind.to_string(),
+            title: title.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+}
+
+/// The game being collected for the match history page.
+static MATCHES: std::sync::LazyLock<std::sync::Mutex<match_history::MatchCollector>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(match_history::MatchCollector::new()));
+/// Serialises `match-history.jsonl` writes (a new record vs. a result backfill).
+static MATCH_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn match_history_path() -> std::path::PathBuf {
+    config::app_data_dir().join("match-history.jsonl")
+}
+
+/// What a gameflow phase does to the match-history record.
+#[derive(Debug, PartialEq)]
+enum MatchStep {
+    /// Champ select began: open a record (closing any stale one).
+    Open,
+    /// The game is loading or running.
+    Started,
+    /// Still the same game (post-game screens).
+    Keep,
+    /// Back to lobby, queue or stats screen: close the record.
+    Close,
+}
+
+fn match_step(phase: &str) -> MatchStep {
+    match phase {
+        "ChampSelect" => MatchStep::Open,
+        "GameStart" | "InProgress" | "Reconnect" => MatchStep::Started,
+        "WaitingForStats" | "PreEndOfGame" => MatchStep::Keep,
+        _ => MatchStep::Close,
+    }
+}
+
+/// `gameData.gameId` of a gameflow session; `None` when missing or 0.
+fn session_game_id(session: &serde_json::Value) -> Option<i64> {
+    session
+        .pointer("/gameData/gameId")
+        .and_then(|v| v.as_i64())
+        .filter(|id| *id > 0)
+}
+
+/// Opens, advances and closes the match-history record on each gameflow phase.
+/// Runs before the champ select tracker is reset, so the pick is still known.
+async fn track_match_phase(app: &tauri::AppHandle, lcu: &SharedLcu, tracker: &SharedTracker, phase: &str) {
+    let open = MATCHES.lock().map(|m| m.is_open()).unwrap_or(false);
+    let step = match_step(phase);
+    if open {
+        let champ = tracker.lock().await.my_champ_id;
+        if let Ok(mut m) = MATCHES.lock() {
+            m.set_champion(i64::from(champ));
+        }
+    }
+    let finished = match step {
+        MatchStep::Open => {
+            let queue_id = lcu.fetch_current_queue_id().await;
+            if !(is_aram_queue(queue_id) || is_mayhem_queue(queue_id)) {
+                MATCHES.lock().ok().and_then(|mut m| m.finish())
+            } else {
+                let (date, time) = local_date_time();
+                MATCHES.lock().ok().and_then(|mut m| m.start(&date, &time, queue_id))
+            }
+        }
+        MatchStep::Started if open => {
+            let game_id = lcu.fetch_gameflow_session().await.as_ref().and_then(session_game_id);
+            if let Ok(mut m) = MATCHES.lock() {
+                m.mark_game_started(game_id);
+            }
+            None
+        }
+        MatchStep::Close => MATCHES.lock().ok().and_then(|mut m| m.finish()),
+        _ => None,
+    };
+    if let Some(record) = finished {
+        save_match_record(app, lcu, record);
+    }
+}
+
+/// Appends a finished record and, for a played game, fills its result from the
+/// client's match history once the client has it (it lags the end of the game).
+fn save_match_record(app: &tauri::AppHandle, lcu: &SharedLcu, record: match_history::MatchRecord) {
+    let path = match_history_path();
+    {
+        let _guard = MATCH_FILE.lock();
+        let _ = match_history::append_record(&path, &record, match_history::KEEP_RECORDS);
+    }
+    let _ = app.emit("match-history-updated", ());
+    if record.result != match_history::MatchResult::Unknown || record.game_id.is_none() {
+        return;
+    }
+    let (app, lcu) = (app.clone(), Arc::clone(lcu));
+    spawn(async move {
+        for wait_secs in [10, 60, 180] {
+            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            if backfill_match_results(&lcu).await {
+                let _ = app.emit("match-history-updated", ());
+            }
+            let resolved = match_history::read_records(&path)
+                .iter()
+                .any(|r| r.game_id == record.game_id && r.result != match_history::MatchResult::Unknown);
+            if resolved {
+                return;
+            }
+        }
+    });
+}
+
+/// Fills unknown results from the client's recent match history; true when the file changed.
+async fn backfill_match_results(lcu: &SharedLcu) -> bool {
+    let path = match_history_path();
+    let pending = match_history::read_records(&path).iter().any(|r| {
+        r.result == match_history::MatchResult::Unknown && r.game_id.is_some()
+    });
+    if !pending {
+        return false;
+    }
+    let Some(games) = lcu.fetch_match_history().await else {
+        return false;
+    };
+    let _guard = MATCH_FILE.lock();
+    let mut records = match_history::read_records(&path);
+    if !match_history::apply_match_history(&mut records, &games) {
+        return false;
+    }
+    match_history::write_records(&path, &records, match_history::KEEP_RECORDS).is_ok()
+}
+
+/// Recorded games, oldest first, with any results the client now knows filled in.
+#[tauri::command]
+async fn get_match_history(lcu: State<'_, SharedLcu>) -> Result<Vec<match_history::MatchRecord>, String> {
+    backfill_match_results(&lcu).await;
+    Ok(match_history::read_records(&match_history_path()))
 }
 
 /// `(kind, title, reason)` of an `lcu-log` event payload; `None` when it is not one.
@@ -1336,6 +1477,7 @@ pub fn run() {
                         .await;
                     } else if event.uri == "/lol-gameflow/v1/gameflow-phase" {
                         let phase = event.data.as_str().unwrap_or("");
+                        track_match_phase(&app_h2, &lcu_for_worker, &tracker, phase).await;
                         if phase == "None" || phase == "Lobby" {
                             reset_champ_select_tracker(&app_h2, &tracker).await;
                             // An invitation that arrived during a game becomes
@@ -1521,7 +1663,8 @@ pub fn run() {
             close_window,
             set_ui_scale,
             toggle_maximize_window,
-            append_exec_log
+            append_exec_log,
+            get_match_history
         ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| {
@@ -3117,7 +3260,7 @@ async fn handle_champ_select_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        SaveConfigError, append_line_rotating, lcu_log_fields, local_date_time, write_exec_log, champ_select_phase, is_card_pick_still_pending,
+        SaveConfigError, append_line_rotating, lcu_log_fields, local_date_time, match_step, session_game_id, write_exec_log, MatchStep, champ_select_phase, is_card_pick_still_pending,
         now_epoch_ms, parse_ff_time, phase_elapsed_ms, remaining_phase_secs,
         validate_trade_chat_text,
     };
@@ -3158,6 +3301,24 @@ mod tests {
         let time = line["time"].as_str().unwrap();
         assert!(regex::Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap().is_match(time), "{time}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_match_step_closes_on_lobby_and_keeps_post_game_screens() {
+        assert_eq!(match_step("ChampSelect"), MatchStep::Open);
+        assert_eq!(match_step("GameStart"), MatchStep::Started);
+        assert_eq!(match_step("InProgress"), MatchStep::Started);
+        assert_eq!(match_step("PreEndOfGame"), MatchStep::Keep);
+        for phase in ["EndOfGame", "Lobby", "None", "Matchmaking", "ReadyCheck"] {
+            assert_eq!(match_step(phase), MatchStep::Close, "{phase}");
+        }
+    }
+
+    #[test]
+    fn test_session_game_id_ignores_zero_and_missing() {
+        assert_eq!(session_game_id(&serde_json::json!({"gameData": {"gameId": 123}})), Some(123));
+        assert_eq!(session_game_id(&serde_json::json!({"gameData": {"gameId": 0}})), None);
+        assert_eq!(session_game_id(&serde_json::json!({})), None);
     }
 
     #[test]

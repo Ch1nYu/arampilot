@@ -1154,6 +1154,12 @@ impl LcuManager {
         self.get_json_opt("/lol-gameflow/v1/session").await
     }
 
+    /// The current player's recent games, newest first; each game lists only that player.
+    pub async fn fetch_match_history(&self) -> Option<serde_json::Value> {
+        self.get_json_opt("/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=20")
+            .await
+    }
+
     /// Honor ballot of the just-finished game; `None` when unavailable
     /// (the ballot only exists between the end of the game and `play_again`).
     pub async fn fetch_honor_ballot(&self) -> Option<serde_json::Value> {
