@@ -1285,7 +1285,7 @@ pub fn run() {
                 let response = match icon_cache::load(&lcu, &icon_cache::cache_dir(), &key).await {
                     Some(bytes) => tauri::http::Response::builder()
                         .status(200)
-                        .header("Content-Type", "image/png")
+                        .header("Content-Type", icon_cache::content_type(&key))
                         .header("Cache-Control", "no-store")
                         .body(bytes),
                     None => tauri::http::Response::builder().status(404).body(Vec::new()),

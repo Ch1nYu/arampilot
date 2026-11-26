@@ -9,6 +9,8 @@ export const ICON = (id: number) => `${ICON_ORIGIN}/champion/${id}.png${revQuery
 export const spellIconUrl = (file: string) => `${ICON_ORIGIN}/spell/${file}${revQuery()}`;
 export const augmentIconUrl = (id: number) => `${ICON_ORIGIN}/augment/${id}.png${revQuery()}`;
 export const itemIconUrl = (id: number) => `${ICON_ORIGIN}/item/${id}.png${revQuery()}`;
+/** Loading-screen art of one champion (jpeg, so its own path). */
+export const loadScreenUrl = (championId: number) => `${ICON_ORIGIN}/loadscreen/${championId}.jpg${revQuery()}`;
 
 /** Same icon URL with its revision replaced. */
 export function iconUrlWithRev(url: string, rev: number): string {

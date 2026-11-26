@@ -95,6 +95,9 @@ pub struct PlayerStats {
     pub damage_taken: i64,
     /// `stats.totalHeal`.
     pub healing: i64,
+    /// `stats.timeCCingOthers`, in seconds.
+    #[serde(default)]
+    pub cc_sec: i64,
     /// `stats.goldEarned`.
     pub gold: i64,
     /// `stats.item0..item6` in order, zeros dropped.
@@ -105,10 +108,17 @@ pub struct PlayerStats {
     pub spells: Vec<i64>,
 }
 
+/// Bumped when [`GameDetail`] gains fields, so records parsed before are re-fetched
+/// while the client still lists the game. 2: `ccSec`.
+pub const DETAIL_VERSION: u32 = 2;
+
 /// Everything the detail view needs from one game.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDetail {
+    /// [`DETAIL_VERSION`] when parsed; older records (0) are fetched again.
+    #[serde(default)]
+    pub version: u32,
     /// Top-level `gameDuration`, in seconds.
     pub duration_sec: i64,
     /// Payload order (the LCU lists team 100 first, then team 200).
@@ -388,6 +398,7 @@ pub fn parse_game_detail(
             damage_to_champions: int_at(stats, "totalDamageDealtToChampions"),
             damage_taken: int_at(stats, "totalDamageTaken"),
             healing: int_at(stats, "totalHeal"),
+            cc_sec: int_at(stats, "timeCCingOthers"),
             gold: int_at(stats, "goldEarned"),
             items: (0..=6)
                 .map(|slot| int_at(stats, &format!("item{slot}")))
@@ -412,6 +423,7 @@ pub fn parse_game_detail(
         });
     }
     Some(GameDetail {
+        version: DETAIL_VERSION,
         duration_sec: int_at(Some(game), "gameDuration"),
         players,
     })
@@ -474,7 +486,9 @@ pub fn apply_game_detail(record: &mut MatchRecord, detail: GameDetail) {
 
 /// Whether the record still needs its per-game detail fetched.
 pub fn needs_detail(record: &MatchRecord) -> bool {
-    record.game_id.is_some() && record.detail.is_none() && record.result != MatchResult::NotPlayed
+    record.game_id.is_some()
+        && record.detail.as_ref().is_none_or(|detail| detail.version < DETAIL_VERSION)
+        && record.result != MatchResult::NotPlayed
 }
 
 /// Stores each detail on the record with that `game_id` that still needs one;
@@ -939,6 +953,7 @@ mod tests {
         assert_eq!(first.damage_to_champions, 70805);
         assert_eq!(first.damage_taken, 55052);
         assert_eq!(first.healing, 16145);
+        assert_eq!(first.cc_sec, 32);
         assert_eq!(first.gold, 19658);
         assert_eq!(first.items, vec![6692, 226668, 3071, 6333, 3053]);
         assert_eq!(
@@ -1015,6 +1030,7 @@ mod tests {
         assert_eq!(player.damage_to_champions, 0);
         assert_eq!(player.damage_taken, 0);
         assert_eq!(player.healing, 0);
+        assert_eq!(player.cc_sec, 0);
         assert_eq!(player.gold, 0);
         assert!(player.items.is_empty());
         assert!(player.augments.is_empty());
@@ -1194,6 +1210,25 @@ mod tests {
         let mut record = sample_record(Some(1), MatchResult::Unknown);
         record.detail = Some(fixture_detail("puuid-6"));
         assert!(!needs_detail(&record));
+
+        // A detail saved before `ccSec` existed (no `version` key) is fetched again,
+        // and apply_details replaces it.
+        let mut old = sample_record(Some(466486599), MatchResult::Win);
+        let mut stale = fixture_detail("puuid-6");
+        stale.version = 0;
+        old.detail = Some(stale);
+        let reread: MatchRecord = serde_json::from_value({
+            let mut v = serde_json::to_value(&old).unwrap();
+            v["detail"].as_object_mut().unwrap().remove("version");
+            v
+        })
+        .unwrap();
+        assert_eq!(reread.detail.as_ref().unwrap().version, 0);
+        assert!(needs_detail(&reread));
+        let mut records = vec![reread];
+        assert!(apply_details(&mut records, vec![(466486599, fixture_detail("puuid-6"))]));
+        assert_eq!(records[0].detail.as_ref().unwrap().version, DETAIL_VERSION);
+        assert!(!needs_detail(&records[0]));
     }
 
     #[test]
@@ -1228,6 +1263,33 @@ mod tests {
                 .get("damage_to_champions")
                 .is_none()
         );
+        let back: MatchRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn test_cc_sec_is_optional_and_serializes_camel_case() {
+        // A record written before `ccSec` existed still deserializes, as 0.
+        let old = json!({ "gameId": 464551151, "date": "2026-11-25", "time": "20:31:05",
+            "queueId": 2400, "championId": 143, "result": "win", "actions": [], "log": [],
+            "detail": { "durationSec": 1127, "players": [ { "teamId": 100, "win": true,
+                "isMe": false, "name": "玩家1#TW2", "championId": 64, "level": 18,
+                "kills": 19, "deaths": 13, "assists": 25, "damageToChampions": 70805,
+                "damageTaken": 55052, "healing": 16145, "gold": 19658,
+                "items": [], "augments": [], "spells": [4, 6] } ] } });
+        let record: MatchRecord = serde_json::from_value(old).unwrap();
+        let player = &record.detail.as_ref().unwrap().players[0];
+        assert_eq!(player.cc_sec, 0);
+        // The field is written back in camelCase, so the page reads `ccSec`.
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["detail"]["players"][0]["ccSec"], 0);
+        assert!(value["detail"]["players"][0].get("cc_sec").is_none());
+
+        // A record with the field round-trips.
+        let mut record = sample_record(Some(466486599), MatchResult::Win);
+        record.detail = Some(fixture_detail("puuid-6"));
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["detail"]["players"][0]["ccSec"], 32);
         let back: MatchRecord = serde_json::from_value(value).unwrap();
         assert_eq!(back, record);
     }

@@ -568,3 +568,30 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .match .match-log > summary::-webkit-details-marker { display: none; }
 .match .match-log > summary:hover { color: var(--text); }
 .match .match-log .log { padding: 0 0 8px 0; }
+
+/* Personal card above the tables: loading-screen art on the left, my numbers on the right. */
+.me-card { position: relative; display: grid; grid-template-columns: 150px minmax(0, 1fr); min-height: 180px; margin: 0 0 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); overflow: hidden; }
+.me-card > .me-art { position: absolute; left: 0; top: 0; display: block; width: 150px; height: 100%; object-fit: cover; object-position: center top; opacity: .55; -webkit-mask-image: linear-gradient(to right, #000 55%, transparent); mask-image: linear-gradient(to right, #000 55%, transparent); }
+.me-card > .me-body { grid-column: 2; display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 14px 16px; }
+.me-card .me-line { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.me-card .me-kda { display: flex; align-items: baseline; gap: 10px; }
+.me-card .me-kda b { font-family: var(--mono); font-size: 28px; font-weight: 700; color: var(--text); letter-spacing: -.02em; }
+.me-card .me-kda span { font-size: 12px; color: var(--muted); }
+.me-card .me-hl { font-size: 13px; color: var(--text); padding-left: 8px; border-left: 2px solid var(--line2); }
+.me-card.win .me-hl { border-left-color: var(--ok); }
+.me-card.loss .me-hl { border-left-color: var(--danger); }
+.me-card .me-cmps { display: flex; flex-direction: column; gap: 6px; }
+.me-card .me-cmp { display: grid; grid-template-columns: 36px minmax(0, 1fr) 46px 52px; gap: 8px; align-items: center; }
+.me-card .me-cmp .k { font-size: 11px; color: var(--muted); }
+.me-card .me-cmp .trk { position: relative; height: 6px; border-radius: 3px; background: var(--line2); overflow: hidden; }
+.me-card .me-cmp .fill { display: block; height: 100%; opacity: .7; background: var(--ok); }
+.me-card.loss .me-cmp .fill { background: var(--danger); }
+.me-card .me-cmp .avg { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+.me-card .me-cmp .v { font-family: var(--mono); font-size: 11px; color: var(--text); text-align: right; white-space: nowrap; }
+.me-card .me-cmp .rk { font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
+.me-card .me-icons { display: flex; align-items: center; gap: 3px; margin-top: auto; overflow: hidden; }
+.me-card .me-icons img { width: 22px; height: 22px; border-radius: 4px; display: block; flex: none; }
+.me-card .me-icons img.aug { border: 1px solid var(--line); }
+.me-card .me-icons img.aug-silver { border-color: #A9B1BA; }
+.me-card .me-icons img.aug-gold { border-color: #D9B45A; }
+.me-card .me-icons img.aug-prismatic { border-color: #B98BF0; }

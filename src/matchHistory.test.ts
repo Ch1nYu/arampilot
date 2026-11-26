@@ -5,7 +5,11 @@ import {
   formatK,
   formatMatchTime,
   matchListHtml,
+  personalHighlight,
   resultLabel,
+  teamCompare,
+  teamOf,
+  type GameDetail,
   type MatchRecord,
   type PlayerStats,
 } from "./matchHistory";
@@ -77,6 +81,27 @@ const tenPlayers = (): PlayerStats[] => [
 
 const detailed = (over: Partial<MatchRecord> = {}): MatchRecord =>
   rec({ detail: { durationSec: 1127, players: tenPlayers() }, ...over });
+
+/** Ten players; `spec` sets each index's numbers, index 0 being me and 5-9 the opponents. */
+const ten = (spec: (i: number) => Partial<PlayerStats> = () => ({})): GameDetail => ({
+  durationSec: 1127,
+  players: Array.from({ length: 10 }, (_, i) =>
+    i === 0
+      ? me({ championId: 1, ...spec(i) })
+      : player({ teamId: i < 5 ? 100 : 200, win: i < 5, championId: i + 1, ...spec(i) }),
+  ),
+});
+
+/** A game where teammate #2 beats me on every axis, so no highlight rule holds by default. */
+const beaten = (over: (i: number) => Partial<PlayerStats> = () => ({})): GameDetail =>
+  ten((i) => ({
+    assists: i === 1 ? 10 : 0,
+    damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+    damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+    healing: i === 1 ? 1000 : 0,
+    gold: 20000,
+    ...over(i),
+  }));
 
 describe("formatK", () => {
   it("keeps whole numbers under 1000", () => {
@@ -268,5 +293,202 @@ describe("matchListHtml without detail", () => {
     expect(matchListHtml([rec({ result: "win" })], nameOf)).toContain("用戶端已沒有這場的詳細資料。");
     expect(matchListHtml([rec({ result: "notPlayed" })], nameOf)).not.toContain("用戶端已沒有這場的詳細資料。");
     expect(matchListHtml([rec({ result: "notPlayed" })], nameOf)).not.toContain('class="match-log"');
+  });
+});
+
+describe("teamOf", () => {
+  it("returns my team, me included, and nobody from the other side", () => {
+    const players = tenPlayers();
+    const members = teamOf({ durationSec: 1127, players }, players[0]);
+    expect(members).toHaveLength(5);
+    expect(members.every((p) => p.teamId === 100)).toBe(true);
+    expect(members).toContain(players[0]);
+  });
+});
+
+describe("personalHighlight", () => {
+  it("rule 1: the whole game, with my share of the team damage", () => {
+    const detail = ten((i) => ({ damageToChampions: i === 0 ? 50000 : 10000 }));
+    expect(personalHighlight(detail)).toBe("全場最高輸出，佔全隊傷害 56%");
+  });
+
+  it("rule 2: my team's top damage when an opponent out-damages me", () => {
+    const detail = ten((i) => ({ damageToChampions: i === 0 ? 50000 : i === 5 ? 60000 : 10000 }));
+    expect(personalHighlight(detail)).toBe("隊上主輸出，佔全隊傷害 56%");
+  });
+
+  it("rule 3: the most damage taken in my team", () => {
+    const detail = ten((i) => ({
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 41000 : i === 1 ? 20000 : 0,
+    }));
+    expect(personalHighlight(detail)).toBe("承受 41.0k 傷害，全隊最多");
+  });
+
+  it("rule 4: the most crowd control in my team", () => {
+    const detail = ten((i) => ({
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+      ccSec: i === 0 ? 32 : i === 1 ? 5 : 0,
+    }));
+    expect(personalHighlight(detail)).toBe("控場 32 秒，全隊最多");
+  });
+
+  it("rule 5: the most healing in my team", () => {
+    const detail = ten((i) => ({
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+      healing: i === 0 ? 3000 : i === 1 ? 1000 : 0,
+    }));
+    expect(personalHighlight(detail)).toBe("治療 3.0k，全隊最多");
+  });
+
+  it("rule 6: the best damage per gold in my team", () => {
+    const detail = ten((i) => ({
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+      gold: i === 0 ? 10000 : i === 1 ? 40000 : 20000,
+    }));
+    expect(personalHighlight(detail)).toBe("花錢效率全隊最高（每 1 金 2.00 傷害）");
+  });
+
+  it("rule 7: the most assists in my team", () => {
+    const detail = ten((i) => ({
+      assists: i === 0 ? 25 : i === 1 ? 24 : 0,
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+      gold: i === 0 ? 10000 : 20000,
+    }));
+    expect(personalHighlight(detail)).toBe("助攻 25，全隊最多");
+  });
+
+  it("takes the whole-game line over the team-top line", () => {
+    const detail = ten((i) => ({
+      assists: i === 0 ? 25 : 0,
+      damageToChampions: i === 0 ? 50000 : i === 1 ? 49000 : 10000,
+      damageTaken: i === 0 ? 41000 : 0,
+    }));
+    expect(personalHighlight(detail)).toBe("全場最高輸出，佔全隊傷害 39%");
+  });
+
+  it("takes crowd control over healing", () => {
+    const detail = ten((i) => ({
+      damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : 10000,
+      damageTaken: i === 0 ? 10000 : i === 1 ? 40000 : 0,
+      ccSec: i === 0 ? 32 : 0,
+      healing: i === 0 ? 3000 : 0,
+    }));
+    expect(personalHighlight(detail)).toBe("控場 32 秒，全隊最多");
+  });
+
+  it("counts a tie in my team as first", () => {
+    const detail = ten((i) => ({ damageToChampions: i === 5 ? 60000 : i < 2 ? 50000 : 10000 }));
+    expect(personalHighlight(detail)).toBe("隊上主輸出，佔全隊傷害 38%");
+  });
+
+  it("returns null when a teammate beats me everywhere", () => {
+    expect(personalHighlight(beaten())).toBeNull();
+  });
+
+  it("returns null without an isMe player", () => {
+    const players = tenPlayers().map((p) => ({ ...p, isMe: false }));
+    expect(personalHighlight({ durationSec: 1127, players })).toBeNull();
+  });
+
+  it("skips the crowd-control line when the record has no ccSec", () => {
+    const withCc = (cc: Partial<PlayerStats>) => beaten((i) => ({ ...(i === 1 ? { ccSec: 5 } : {}), ...cc }));
+    expect(personalHighlight(withCc({ ccSec: 32 }))).toBe("控場 32 秒，全隊最多");
+    // same game, but stored before ccSec existed: the field is missing and reads as 0
+    expect(personalHighlight(withCc({}))).toBeNull();
+  });
+});
+
+describe("teamCompare", () => {
+  const detail = (): GameDetail => ({ durationSec: 1127, players: tenPlayers() });
+
+  it("reports my number, the team average, the team max and my rank", () => {
+    expect(teamCompare(detail(), "damageToChampions")).toEqual({ mine: 70805, avg: 37161, max: 70805, rank: 1 });
+    expect(teamCompare(detail(), "damageTaken")).toEqual({ mine: 40000, avg: 8000, max: 40000, rank: 1 });
+    expect(teamCompare(detail(), "gold")).toEqual({ mine: 19658, avg: 14731.6, max: 19658, rank: 1 });
+  });
+
+  it("shares the better rank on a tie", () => {
+    const tie = ten((i) => ({ damageToChampions: i < 2 ? 40000 : 0 }));
+    expect(teamCompare(tie, "damageToChampions")).toEqual({ mine: 40000, avg: 16000, max: 40000, rank: 1 });
+  });
+
+  it("counts only the teammates above me", () => {
+    const behind = ten((i) => ({ damageToChampions: i === 0 ? 20000 : i === 1 ? 50000 : i === 2 ? 30000 : 0 }));
+    expect(teamCompare(behind, "damageToChampions")).toEqual({ mine: 20000, avg: 20000, max: 50000, rank: 3 });
+  });
+
+  it("has no team without an isMe player", () => {
+    const players = tenPlayers().map((p) => ({ ...p, isMe: false }));
+    expect(teamCompare({ durationSec: 1127, players }, "gold")).toEqual({ mine: 0, avg: 0, max: 0, rank: 0 });
+  });
+});
+
+describe("the personal card", () => {
+  /** The card is the first thing in the body, so the tables start at the duration line. */
+  const cardOf = (html: string) => html.slice(0, html.indexOf('<div class="match-dur">'));
+
+  const withKda = (kills: number, deaths: number, assists: number): PlayerStats[] =>
+    tenPlayers().map((p, i) => (i === 0 ? { ...p, kills, deaths, assists } : p));
+
+  it("sits above both tables with my art, KDA, highlight and picks", () => {
+    const html = matchListHtml([rec({ detail: { durationSec: 1127, players: withKda(9, 8, 39) } })], nameOf);
+    const card = cardOf(html);
+    expect(html.indexOf('class="me-card')).toBeLessThan(html.indexOf('class="match-dur"'));
+    expect(html.indexOf('class="me-card')).toBeLessThan(html.indexOf("我方"));
+    expect(card).toContain('<div class="me-card win">');
+    expect(card).toContain('<img class="me-art" src="http://icon.localhost/loadscreen/1.jpg" alt="">');
+    expect(card).toContain('<span class="res win">勝</span> · ARAM · 18:47 · 英雄1');
+    expect(card).toContain("<b>9 / 8 / 39</b>");
+    expect(card).toContain("傷害佔 38%");
+    expect(card).toContain('<div class="me-hl">全場最高輸出，佔全隊傷害 38%</div>');
+    expect(card).toContain('<img class="aug aug-gold" src="http://icon.localhost/augment/123.png"');
+    expect(card).toContain('src="http://icon.localhost/item/1001.png"');
+  });
+
+  it("gives each compare row a bar, my value, the team average and my rank", () => {
+    const card = cardOf(matchListHtml([detailed()], nameOf));
+    expect(card.match(/class="me-cmp"/g) ?? []).toHaveLength(3);
+    expect(card).toContain('<span class="k">傷害</span>');
+    expect(card).toContain('<span class="k">承受</span>');
+    expect(card).toContain('<span class="k">金錢</span>');
+    expect(card.indexOf("傷害")).toBeLessThan(card.indexOf("承受"));
+    expect(card.indexOf("承受")).toBeLessThan(card.indexOf("金錢"));
+    expect(card).toContain('<i class="fill" style="width:100%"></i>');
+    expect(card).toContain('<i class="avg" style="left:52%" title="隊上平均 37.2k"></i>');
+    expect(card).toContain('<span class="v">70.8k</span>');
+    expect(card).toContain('<span class="v">40.0k</span>');
+    expect(card).toContain('<span class="v">19.7k</span>');
+    expect(card).toContain('<span class="rk">第 1 / 5</span>');
+  });
+
+  it("uses the loss class and 敗 on a lost game", () => {
+    const players = tenPlayers().map((p, i) => (i === 0 ? { ...p, win: false } : p));
+    const card = cardOf(matchListHtml([rec({ result: "loss", detail: { durationSec: 1127, players } })], nameOf));
+    expect(card).toContain('<div class="me-card loss">');
+    expect(card).toContain('<span class="res loss">敗</span>');
+  });
+
+  it("is left out when the record has no detail or no isMe player", () => {
+    expect(matchListHtml([rec()], nameOf)).not.toContain("me-card");
+    const players = tenPlayers().map((p) => ({ ...p, isMe: false }));
+    const html = matchListHtml([rec({ detail: { durationSec: 1127, players } })], nameOf);
+    expect(html).not.toContain("me-card");
+  });
+
+  it("escapes the champion name it borrows from the profile", () => {
+    const html = matchListHtml([detailed()], (id) => (id === 1 ? "<b>壞</b>" : `英雄${id}`));
+    expect(html).toContain("&lt;b&gt;壞&lt;/b&gt;");
+    expect(html).not.toContain("<b>壞");
+  });
+
+  it("opens only the newest game", () => {
+    const html = matchListHtml([rec({ date: "2026-11-24" }), detailed({ date: "2026-11-25" })], nameOf);
+    expect(html.match(/class="match" open/g) ?? []).toHaveLength(1);
+    expect(html.indexOf('class="match" open')).toBeLessThan(html.indexOf('class="match">'));
   });
 });

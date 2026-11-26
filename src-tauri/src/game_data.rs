@@ -203,7 +203,7 @@ pub fn icon_asset_path(key: &IconKey) -> Option<String> {
     let icon = match key {
         IconKey::Augment(id) => &data.augments.get(id)?.icon,
         IconKey::Item(id) => &data.items.get(id)?.icon,
-        IconKey::Champion(_) | IconKey::Spell(_) => return None,
+        IconKey::Champion(_) | IconKey::Spell(_) | IconKey::LoadScreen(_) => return None,
     };
     (!icon.is_empty()).then(|| icon.clone())
 }

@@ -1,4 +1,5 @@
-//! Disk cache for champion, summoner-spell, augment and item icon PNGs.
+//! Disk cache for champion, summoner-spell, augment and item icon PNGs and
+//! champion loading-screen JPEGs.
 //!
 //! The webview loads icons through the custom `icon` protocol; lookup order is
 //! the cache folder, the local League client (LCU) assets, and the
@@ -9,6 +10,8 @@
 //! Champions and spells have a fixed asset path. An augment or item icon exists
 //! only in the client's own tables (`crate::game_data`), so its path is unknown
 //! until that table has been fetched; such a key is skipped, not fetched.
+//! Loading-screen art is a JPEG whose path sits in the champion JSON, so it is
+//! resolved per request and never part of a version refresh.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -27,6 +30,8 @@ pub enum IconKey {
     Augment(i64),
     /// An item icon by item id (e.g. 226668).
     Item(i64),
+    /// A champion loading-screen image by champion id (e.g. 21).
+    LoadScreen(i32),
 }
 
 /// Longest allowed spell icon file stem (guard against absurd URLs).
@@ -71,10 +76,10 @@ fn parse_spell_name(raw: &str) -> Option<String> {
 }
 
 /// Parse a protocol URL path (`/champion/266.png`, `/spell/summoner_flash.png`,
-/// `/augment/2141.png`, `/item/226668.png`) into an icon key. Anything else —
-/// other segments, uppercase, `..`, backslash, `%`, extra slashes, missing or
-/// different extension, empty id — is rejected so no caller-controlled string
-/// reaches the filesystem.
+/// `/augment/2141.png`, `/item/226668.png`, `/loadscreen/21.jpg`) into an icon
+/// key. Anything else — other segments, uppercase, `..`, backslash, `%`, extra
+/// slashes, missing or different extension, empty id — is rejected so no
+/// caller-controlled string reaches the filesystem.
 pub fn parse_icon_path(path: &str) -> Option<IconKey> {
     let rest = path.strip_prefix('/')?;
     let mut segments = rest.split('/');
@@ -84,24 +89,28 @@ pub fn parse_icon_path(path: &str) -> Option<IconKey> {
     if segments.next().is_some() {
         return None;
     }
-    let stem = file.strip_suffix(".png")?;
     match kind {
-        "champion" => Some(IconKey::Champion(parse_champion_id(stem)?)),
-        "spell" => Some(IconKey::Spell(parse_spell_name(stem)?)),
-        "augment" => Some(IconKey::Augment(parse_table_id(stem)?)),
-        "item" => Some(IconKey::Item(parse_table_id(stem)?)),
+        "champion" => Some(IconKey::Champion(parse_champion_id(file.strip_suffix(".png")?)?)),
+        "spell" => Some(IconKey::Spell(parse_spell_name(file.strip_suffix(".png")?)?)),
+        "augment" => Some(IconKey::Augment(parse_table_id(file.strip_suffix(".png")?)?)),
+        "item" => Some(IconKey::Item(parse_table_id(file.strip_suffix(".png")?)?)),
+        // Loading-screen art is a JPEG; the id rules are the champion ones.
+        "loadscreen" => Some(IconKey::LoadScreen(parse_champion_id(
+            file.strip_suffix(".jpg")?,
+        )?)),
         _ => None,
     }
 }
 
 /// Cache file name for an icon key (`champion-266.png`, `spell-summoner_flash.png`,
-/// `augment-2141.png`, `item-226668.png`).
+/// `augment-2141.png`, `item-226668.png`, `loadscreen-21.jpg`).
 pub fn file_name(key: &IconKey) -> String {
     match key {
         IconKey::Champion(id) => format!("champion-{id}.png"),
         IconKey::Spell(name) => format!("spell-{name}.png"),
         IconKey::Augment(id) => format!("augment-{id}.png"),
         IconKey::Item(id) => format!("item-{id}.png"),
+        IconKey::LoadScreen(id) => format!("loadscreen-{id}.jpg"),
     }
 }
 
@@ -119,16 +128,22 @@ pub fn key_from_file_name(name: &str) -> Option<IconKey> {
     if let Some(rest) = name.strip_prefix("item-") {
         return Some(IconKey::Item(parse_table_id(rest.strip_suffix(".png")?)?));
     }
+    if let Some(rest) = name.strip_prefix("loadscreen-") {
+        return Some(IconKey::LoadScreen(parse_champion_id(rest.strip_suffix(".jpg")?)?));
+    }
     None
 }
 
 /// LCU asset path for an icon key; `None` for an augment or item the client's
-/// table has no icon path for (or has not been asked for yet).
+/// table has no icon path for (or has not been asked for yet), and for
+/// loading-screen art, whose path lives in the champion JSON fetched by
+/// [`load`].
 pub fn lcu_path(key: &IconKey) -> Option<String> {
     match key {
         IconKey::Champion(id) => Some(format!("/lol-game-data/assets/v1/champion-icons/{id}.png")),
         IconKey::Spell(name) => Some(format!("/lol-game-data/assets/data/spells/icons2d/{name}.png")),
         IconKey::Augment(_) | IconKey::Item(_) => crate::game_data::icon_asset_path(key),
+        IconKey::LoadScreen(_) => None,
     }
 }
 
@@ -158,16 +173,93 @@ pub fn cdn_url(key: &IconKey) -> Option<String> {
         IconKey::Augment(_) | IconKey::Item(_) => {
             cdn_url_for_asset(&crate::game_data::icon_asset_path(key)?)
         }
+        // Loading-screen art is mirrored under the path in its champion JSON.
+        IconKey::LoadScreen(_) => None,
     }
+}
+
+/// Champion table path of one champion in the client's assets.
+fn champion_json_path(id: i32) -> String {
+    format!("/lol-game-data/assets/v1/champions/{id}.json")
+}
+
+/// CommunityDragon mirror of [`champion_json_path`].
+fn cdn_champion_json_url(id: i32) -> String {
+    format!("{CDN_ASSET_PREFIX}v1/champions/{id}.json")
+}
+
+/// The champion JSON of one champion: the local client when connected, else
+/// the CDN copy of the same table.
+async fn champion_json(lcu: &LcuManager, id: i32) -> Option<serde_json::Value> {
+    if lcu.is_connected().await
+        && let Ok(bytes) = lcu.fetch_asset(&champion_json_path(id)).await
+        && let Ok(champion) = serde_json::from_slice(&bytes)
+    {
+        return Some(champion);
+    }
+    let res = cdn_client().get(cdn_champion_json_url(id)).send().await.ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    res.json().await.ok()
+}
+
+/// The loading-screen asset path of a champion's base skin.
+///
+/// The skin flagged `isBase` wins over the first entry in `skins`; a champion
+/// without any usable path yields `None`.
+pub fn base_load_screen_path(champion: &serde_json::Value) -> Option<String> {
+    let path = |skin: &serde_json::Value| {
+        skin.get("loadScreenPath")
+            .and_then(|path| path.as_str())
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+    };
+    let skins = champion.get("skins")?.as_array()?;
+    let base = skins
+        .iter()
+        .find(|skin| skin.get("isBase").and_then(|is_base| is_base.as_bool()).unwrap_or(false));
+    base.and_then(path).or_else(|| skins.first().and_then(path))
+}
+
+/// The loading-screen asset path of one champion, resolved from its JSON.
+async fn load_screen_asset(lcu: &LcuManager, id: i32) -> Option<String> {
+    base_load_screen_path(&champion_json(lcu, id).await?)
 }
 
 /// The 8-byte PNG file signature.
 const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
+/// The 3-byte JPEG start-of-image marker.
+const JPEG_SIGNATURE: [u8; 3] = [0xFF, 0xD8, 0xFF];
+
 /// Whether bytes start with the PNG file signature (cheap integrity check so
 /// an error page or truncated download never lands in the cache).
 pub fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(&PNG_SIGNATURE)
+}
+
+/// Whether bytes start with the JPEG start-of-image marker, the same cheap
+/// integrity check as [`is_png`] for the loading-screen art.
+pub fn is_jpeg(bytes: &[u8]) -> bool {
+    bytes.starts_with(&JPEG_SIGNATURE)
+}
+
+/// `Content-Type` of the bytes [`load`] serves for `key`.
+pub fn content_type(key: &IconKey) -> &'static str {
+    match key {
+        IconKey::LoadScreen(_) => "image/jpeg",
+        _ => "image/png",
+    }
+}
+
+/// Whether `bytes` are the image format `key` is served in: JPEG for
+/// loading-screen art, PNG for every icon.
+fn is_served_image(key: &IconKey, bytes: &[u8]) -> bool {
+    match key {
+        IconKey::LoadScreen(_) => is_jpeg(bytes),
+        _ => is_png(bytes),
+    }
 }
 
 /// Whether a stored version means the cached icons are out of date: no stored
@@ -235,42 +327,52 @@ fn cdn_client() -> &'static reqwest::Client {
 
 /// Load an icon by key. Lookup order: cache folder -> local client -> CDN.
 ///
-/// The returned bytes always pass [`is_png`]; anything fetched is written to
-/// the cache folder (a failed write is ignored, the bytes are still served).
+/// The returned bytes always pass [`is_png`], or [`is_jpeg`] for loading-screen
+/// art; anything fetched is written to the cache folder (a failed write is
+/// ignored, the bytes are still served).
 pub async fn load(lcu: &LcuManager, dir: &Path, key: &IconKey) -> Option<Vec<u8>> {
     let name = file_name(key);
 
-    // 1. Cache hit.
+    // 1. Cache hit, in the image format the key is served in.
     if let Ok(bytes) = std::fs::read(dir.join(&name))
-        && is_png(&bytes)
+        && is_served_image(key, &bytes)
     {
         return Some(bytes);
     }
 
-    // 2. Local client assets when a client is connected.
-    let lcu_asset = lcu_path(key);
+    // 2. The asset path: fixed for most keys, from the champion JSON for
+    //    loading-screen art (so the JSON is fetched before the image).
+    let asset = match key {
+        IconKey::LoadScreen(id) => load_screen_asset(lcu, *id).await,
+        _ => lcu_path(key),
+    };
     let mut bytes: Option<Vec<u8>> = None;
-    if let Some(asset) = lcu_asset.as_deref()
+    if let Some(asset) = asset.as_deref()
         && lcu.is_connected().await
         && let Ok(fetched) = lcu.fetch_asset(asset).await
     {
         bytes = Some(fetched);
     }
 
-    // 3. CDN last resort: also covers an LCU reply that is not real PNG data.
-    // An unknown asset path (an augment or item the table does not know) has
-    // no CDN mirror either, so the icon is simply unavailable.
-    if bytes.as_ref().is_none_or(|b| !is_png(b)) {
-        let res = cdn_client().get(cdn_url(key)?).send().await.ok()?;
+    // 3. CDN last resort: also covers an LCU reply that is not real image data.
+    // An unknown asset path (an augment or item the table does not know, or a
+    // champion whose JSON named no loading screen) has no CDN mirror either,
+    // so the icon is simply unavailable.
+    if bytes.as_ref().is_none_or(|b| !is_served_image(key, b)) {
+        let url = match key {
+            IconKey::LoadScreen(_) => cdn_url_for_asset(asset.as_deref()?),
+            _ => cdn_url(key),
+        }?;
+        let res = cdn_client().get(url).send().await.ok()?;
         if !res.status().is_success() {
             return None;
         }
         bytes = Some(res.bytes().await.ok()?.to_vec());
     }
 
-    // 4. Only cache and serve verified PNG data.
+    // 4. Only cache and serve verified image data.
     let bytes = bytes?;
-    if !is_png(&bytes) {
+    if !is_served_image(key, &bytes) {
         return None;
     }
     let _ = write_atomic(dir, &name, &bytes);
@@ -320,7 +422,8 @@ pub async fn refresh_if_version_changed(lcu: &LcuManager, dir: &Path) -> Option<
 
     // Sequential on purpose: one request at a time keeps the client responsive.
     // A key without a known asset path (an augment or item the table has no
-    // entry for) is neither a success nor a failure: nothing to download.
+    // entry for, and loading-screen art, whose path only the champion JSON
+    // names) is neither a success nor a failure: nothing to download.
     let mut failures = 0usize;
     for key in &keys {
         let Some(path) = lcu_path(key) else {
@@ -364,6 +467,13 @@ mod tests {
         bytes
     }
 
+    /// Minimal bytes that pass `is_jpeg`.
+    fn jpeg_bytes() -> Vec<u8> {
+        let mut bytes = JPEG_SIGNATURE.to_vec();
+        bytes.extend_from_slice(b"fake-image-data");
+        bytes
+    }
+
     #[test]
     fn test_parse_icon_path_accepts_valid_champion_and_spell_paths() {
         assert_eq!(parse_icon_path("/champion/266.png"), Some(IconKey::Champion(266)));
@@ -381,6 +491,26 @@ mod tests {
         assert_eq!(parse_icon_path("/item/226668.png"), Some(IconKey::Item(226668)));
         // 7 digits still fit, the value only has to stay positive.
         assert_eq!(parse_icon_path("/item/9999999.png"), Some(IconKey::Item(9999999)));
+    }
+
+    #[test]
+    fn test_parse_icon_path_accepts_load_screen_paths() {
+        assert_eq!(parse_icon_path("/loadscreen/21.jpg"), Some(IconKey::LoadScreen(21)));
+        assert_eq!(parse_icon_path("/loadscreen/1.jpg"), Some(IconKey::LoadScreen(1)));
+    }
+
+    #[test]
+    fn test_parse_icon_path_rejects_bad_load_screen_paths() {
+        // JPEG only, the champion id rules, and a lowercase kind segment.
+        assert_eq!(parse_icon_path("/loadscreen/21.png"), None);
+        assert_eq!(parse_icon_path("/loadscreen/21"), None);
+        assert_eq!(parse_icon_path("/loadscreen/0.jpg"), None);
+        assert_eq!(parse_icon_path("/LoadScreen/21.jpg"), None);
+        assert_eq!(parse_icon_path("/loadscreen/1000000.jpg"), None);
+        assert_eq!(parse_icon_path("/loadscreen/.jpg"), None);
+        assert_eq!(parse_icon_path("/loadscreen/12a4.jpg"), None);
+        assert_eq!(parse_icon_path("/loadscreen/../21.jpg"), None);
+        assert_eq!(parse_icon_path("/loadscreen/21.jpg/extra.jpg"), None);
     }
 
     #[test]
@@ -440,6 +570,7 @@ mod tests {
             IconKey::Spell("summonerboost".to_string()),
             IconKey::Augment(2141),
             IconKey::Item(226668),
+            IconKey::LoadScreen(21),
         ] {
             let name = file_name(&key);
             assert_eq!(key_from_file_name(&name), Some(key));
@@ -448,6 +579,7 @@ mod tests {
         assert_eq!(file_name(&IconKey::Spell("summoner_flash".to_string())), "spell-summoner_flash.png");
         assert_eq!(file_name(&IconKey::Augment(2141)), "augment-2141.png");
         assert_eq!(file_name(&IconKey::Item(226668)), "item-226668.png");
+        assert_eq!(file_name(&IconKey::LoadScreen(21)), "loadscreen-21.jpg");
     }
 
     #[test]
@@ -460,6 +592,9 @@ mod tests {
         assert_eq!(key_from_file_name("augment-0.png"), None);
         assert_eq!(key_from_file_name("item-12345678.png"), None);
         assert_eq!(key_from_file_name("item-226668.png.tmp"), None);
+        assert_eq!(key_from_file_name("loadscreen-21.png"), None);
+        assert_eq!(key_from_file_name("loadscreen-0.jpg"), None);
+        assert_eq!(key_from_file_name("loadscreen-21.jpg.tmp"), None);
         assert_eq!(key_from_file_name("icon.png"), None);
     }
 
@@ -499,6 +634,68 @@ mod tests {
     }
 
     #[test]
+    fn test_load_screen_has_no_fixed_path() {
+        // Its asset path only the champion JSON names, so neither the LCU path
+        // nor the CDN URL can be built without that lookup.
+        let key = IconKey::LoadScreen(21);
+        assert_eq!(lcu_path(&key), None);
+        assert_eq!(cdn_url(&key), None);
+        assert_eq!(champion_json_path(21), "/lol-game-data/assets/v1/champions/21.json");
+        assert_eq!(
+            cdn_champion_json_url(21),
+            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champions/21.json"
+        );
+    }
+
+    #[test]
+    fn test_base_load_screen_path_prefers_the_base_skin() {
+        // `isBase` wins even when it is not the first entry.
+        let champion = serde_json::json!({
+            "skins": [
+                { "isBase": false,
+                  "loadScreenPath": "/lol-game-data/assets/ASSETS/Characters/MissFortune/Skins/Skin01/MissFortuneLoadScreen.jpg" },
+                { "isBase": true,
+                  "loadScreenPath": "/lol-game-data/assets/ASSETS/Characters/MissFortune/Skins/Base/MissFortuneLoadScreen.jpg" },
+            ]
+        });
+        assert_eq!(
+            base_load_screen_path(&champion).as_deref(),
+            Some("/lol-game-data/assets/ASSETS/Characters/MissFortune/Skins/Base/MissFortuneLoadScreen.jpg")
+        );
+
+        // No `isBase` flag: the first skin is used.
+        let champion = serde_json::json!({
+            "skins": [
+                { "loadScreenPath": "/first.jpg" },
+                { "isBase": false, "loadScreenPath": "/second.jpg" },
+            ]
+        });
+        assert_eq!(base_load_screen_path(&champion).as_deref(), Some("/first.jpg"));
+
+        // A base skin without a path falls back to the first skin.
+        let champion = serde_json::json!({
+            "skins": [
+                { "loadScreenPath": "/first.jpg" },
+                { "isBase": true, "loadScreenPath": "" },
+            ]
+        });
+        assert_eq!(base_load_screen_path(&champion).as_deref(), Some("/first.jpg"));
+
+        // Nothing usable: no skins, blank or non-string paths, not an object.
+        for champion in [
+            serde_json::json!({}),
+            serde_json::json!({ "skins": [] }),
+            serde_json::json!({ "skins": null }),
+            serde_json::json!({ "skins": [ { "isBase": true } ] }),
+            serde_json::json!({ "skins": [ { "loadScreenPath": "" } ] }),
+            serde_json::json!({ "skins": [ { "loadScreenPath": 42 } ] }),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(base_load_screen_path(&champion), None, "{champion}");
+        }
+    }
+
+    #[test]
     fn test_cdn_url_for_asset_mirrors_client_assets() {
         assert_eq!(
             cdn_url_for_asset("/lol-game-data/assets/ASSETS/UX/Kiwi/Augments/Icons/UltraHydra_small.png")
@@ -531,6 +728,38 @@ mod tests {
         assert!(!is_png(b"<html>404</html>"));
         assert!(!is_png(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0B]));
         assert!(!is_png(&PNG_SIGNATURE[..4]));
+    }
+
+    #[test]
+    fn test_is_jpeg_checks_start_of_image_marker() {
+        assert!(is_jpeg(&jpeg_bytes()));
+        assert!(is_jpeg(&JPEG_SIGNATURE));
+        assert!(!is_jpeg(b""));
+        assert!(!is_jpeg(b"<html>404</html>"));
+        assert!(!is_jpeg(&png_bytes()));
+        assert!(!is_jpeg(&JPEG_SIGNATURE[..2]));
+        assert!(!is_jpeg(&[0xFF, 0xD8, 0xFE]));
+    }
+
+    #[test]
+    fn test_is_served_image_matches_the_kind() {
+        assert!(is_served_image(&IconKey::Champion(266), &png_bytes()));
+        assert!(!is_served_image(&IconKey::Champion(266), &jpeg_bytes()));
+        assert!(is_served_image(&IconKey::LoadScreen(21), &jpeg_bytes()));
+        assert!(!is_served_image(&IconKey::LoadScreen(21), &png_bytes()));
+    }
+
+    #[test]
+    fn test_content_type_follows_the_kind() {
+        assert_eq!(content_type(&IconKey::LoadScreen(21)), "image/jpeg");
+        for key in [
+            IconKey::Champion(266),
+            IconKey::Spell("summoner_flash".to_string()),
+            IconKey::Augment(2141),
+            IconKey::Item(226668),
+        ] {
+            assert_eq!(content_type(&key), "image/png", "{key:?}");
+        }
     }
 
     #[test]
@@ -598,6 +827,18 @@ mod tests {
         // `LcuManager::new()` is not connected to any client; the cache hit
         // short-circuits before any network access.
         let loaded = load(&LcuManager::new(), &dir, &IconKey::Champion(266)).await;
+        assert_eq!(loaded, Some(bytes));
+
+        std::fs::remove_dir_all(&dir).expect("temp folder removed");
+    }
+
+    #[tokio::test]
+    async fn test_load_serves_cached_jpeg_load_screen_without_lcu_or_network() {
+        let dir = temp_dir("load-cache-hit-loadscreen");
+        let bytes = jpeg_bytes();
+        write_atomic(&dir, "loadscreen-21.jpg", &bytes).expect("seed the cache");
+
+        let loaded = load(&LcuManager::new(), &dir, &IconKey::LoadScreen(21)).await;
         assert_eq!(loaded, Some(bytes));
 
         std::fs::remove_dir_all(&dir).expect("temp folder removed");

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BUILTIN_CHAMPIONS } from "./champions";
-import { ICON, augmentIconUrl, escapeHtml, itemIconUrl } from "./html";
+import { ICON, augmentIconUrl, escapeHtml, itemIconUrl, loadScreenUrl } from "./html";
 import { queueModeLabel } from "./queues";
 import { state } from "./state";
 
@@ -39,6 +39,8 @@ export interface PlayerStats {
   damageToChampions: number;
   damageTaken: number;
   healing: number;
+  /** Seconds this player crowd-controlled others; records stored before it existed have no value (read as 0). */
+  ccSec?: number;
   gold: number;
   items: number[];
   augments: AugmentPick[];
@@ -120,9 +122,74 @@ function logLinesHtml(lines: MatchLogLine[]): string {
     .join("");
 }
 
+/* ---------- personal card of one game ---------- */
+
+/** The players on my team, me included. */
+export function teamOf(detail: GameDetail, me: PlayerStats): PlayerStats[] {
+  return detail.players.filter((p) => p.teamId === me.teamId);
+}
+
+/** CC seconds; records written before the field existed count as 0, so they never win rule 4. */
+const ccSec = (p: PlayerStats) => p.ccSec ?? 0;
+
+/** Damage per gold; a zero gold reads as 1 so the ratio stays finite. */
+const goldEfficiency = (p: PlayerStats) => p.damageToChampions / Math.max(p.gold, 1);
+
+/** My share of the team's champion damage, in whole percent. */
+function damageShare(me: PlayerStats, team: PlayerStats[]): number {
+  const total = team.reduce((sum, p) => sum + p.damageToChampions, 0);
+  return total > 0 ? Math.round((100 * me.damageToChampions) / total) : 0;
+}
+
+/**
+ * The one line worth reading about my game: the first rule that holds, where "first" means no
+ * teammate is strictly greater (a tie counts as first). Null when nothing holds or I am not in it.
+ */
+export function personalHighlight(detail: GameDetail): string | null {
+  const me = detail.players.find((p) => p.isMe);
+  if (!me) return null;
+  const team = teamOf(detail, me);
+  const lead = (value: (p: PlayerStats) => number) => team.every((p) => value(me) >= value(p));
+  const share = damageShare(me, team);
+  if (detail.players.every((p) => me.damageToChampions >= p.damageToChampions))
+    return `全場最高輸出，佔全隊傷害 ${share}%`;
+  if (lead((p) => p.damageToChampions)) return `隊上主輸出，佔全隊傷害 ${share}%`;
+  if (lead((p) => p.damageTaken)) return `承受 ${formatK(me.damageTaken)} 傷害，全隊最多`;
+  if (ccSec(me) > 0 && lead(ccSec)) return `控場 ${ccSec(me)} 秒，全隊最多`;
+  if (me.healing > 0 && lead((p) => p.healing)) return `治療 ${formatK(me.healing)}，全隊最多`;
+  if (lead(goldEfficiency)) return `花錢效率全隊最高（每 1 金 ${goldEfficiency(me).toFixed(2)} 傷害）`;
+  if (lead((p) => p.assists)) return `助攻 ${me.assists}，全隊最多`;
+  return null;
+}
+
+/** The team-table column a card row compares. */
+export type CompareKey = "damageToChampions" | "damageTaken" | "gold";
+
+/** How my number compares with my team; rank is 1-based and ties share the better rank. */
+export interface TeamCompare {
+  mine: number;
+  avg: number;
+  max: number;
+  /** 0 when the game has no isMe player, because then there is no team to compare with. */
+  rank: number;
+}
+
+export function teamCompare(detail: GameDetail, key: CompareKey): TeamCompare {
+  const me = detail.players.find((p) => p.isMe);
+  const team = me ? teamOf(detail, me) : [];
+  if (!me || !team.length) return { mine: 0, avg: 0, max: 0, rank: 0 };
+  const mine = me[key];
+  return {
+    mine,
+    avg: team.reduce((sum, p) => sum + p[key], 0) / team.length,
+    max: Math.max(...team.map((p) => p[key])),
+    rank: 1 + team.filter((p) => p[key] > mine).length,
+  };
+}
+
 /* ---------- expanded game detail ---------- */
 
-/** 16px on the summary line, 18px in the tables (`.match > summary .augs` / `.match .pl .augs`). */
+/** 16px on the summary line, 18px in the tables, 22px on the personal card (`.match > summary .augs` / `.match .pl .augs` / `.me-card .me-icons`). */
 function augmentIconsHtml(augments: AugmentPick[]): string {
   return augments
     .slice(0, 6)
@@ -173,29 +240,70 @@ function teamBlocks(players: PlayerStats[]): { title: string; players: PlayerSta
   ];
 }
 
+/** The three compare rows the card shows. */
+const compareRows: { key: CompareKey; label: string }[] = [
+  { key: "damageToChampions", label: "傷害" },
+  { key: "damageTaken", label: "承受" },
+  { key: "gold", label: "金錢" },
+];
+
+/** Label | bar against the team max with the team average ticked | my value | my rank. */
+function compareRowHtml(detail: GameDetail, key: CompareKey, label: string, size: number): string {
+  const c = teamCompare(detail, key);
+  const pct = (v: number) => (c.max > 0 ? Math.round((v / c.max) * 100) : 0);
+  return `<div class="me-cmp"><span class="k">${label}</span><span class="trk"><i class="fill" style="width:${pct(c.mine)}%"></i><i class="avg" style="left:${pct(c.avg)}%" title="隊上平均 ${escapeHtml(formatK(c.avg))}"></i></span><span class="v">${escapeHtml(formatK(c.mine))}</span><span class="rk">第 ${c.rank} / ${size}</span></div>`;
+}
+
+/** Above the tables: my art, one identity line, the big KDA, my best line, my ranks and my picks. */
+function personalCardHtml(
+  r: MatchRecord,
+  detail: GameDetail,
+  me: PlayerStats,
+  nameOf: (id: number) => string,
+): string {
+  const team = teamOf(detail, me);
+  const res = me.win ? "win" : "loss";
+  const highlight = personalHighlight(detail);
+  const items = me.items
+    .slice(0, 7)
+    .map((id) => `<img src="${escapeHtml(itemIconUrl(id))}" alt="" loading="lazy">`)
+    .join("");
+  const rows = compareRows.map((c) => compareRowHtml(detail, c.key, c.label, team.length)).join("");
+  const line = [
+    `<span class="res ${res}">${me.win ? "勝" : "敗"}</span>`,
+    escapeHtml(queueModeLabel(r.queueId)),
+    formatDuration(detail.durationSec),
+    escapeHtml(nameOf(me.championId)),
+  ].join(" · ");
+  return `<div class="me-card ${res}"><img class="me-art" src="${escapeHtml(loadScreenUrl(me.championId))}" alt=""><div class="me-body"><div class="me-line">${line}</div><div class="me-kda"><b>${me.kills} / ${me.deaths} / ${me.assists}</b><span>傷害佔 ${damageShare(me, team)}%</span></div>${highlight ? `<div class="me-hl">${escapeHtml(highlight)}</div>` : ""}<div class="me-cmps">${rows}</div><div class="me-icons">${augmentIconsHtml(me.augments)}${items}</div></div></div>`;
+}
+
 /** Body of one `<details class="match">`: the log alone, or the two tables plus the folded log. */
 function matchBodyHtml(r: MatchRecord, nameOf: (id: number) => string): string {
   const log = `<div class="log">${logLinesHtml(r.log)}</div>`;
-  const players = r.detail?.players ?? [];
-  if (!r.detail || !players.length) {
+  const detail = r.detail;
+  const players = detail?.players ?? [];
+  if (!detail || !players.length) {
     const note = r.result === "notPlayed" ? "" : `<div class="card-desc">用戶端已沒有這場的詳細資料。</div>`;
     return `${note}${log}`;
   }
+  const me = players.find((p) => p.isMe);
+  const card = me ? personalCardHtml(r, detail, me, nameOf) : "";
   const maxDamage = Math.max(...players.map((p) => p.damageToChampions));
   const teams = teamBlocks(players)
     .map((t) => teamBlockHtml(t.title, t.players, maxDamage, nameOf))
     .join("");
-  return `<div class="match-dur">遊戲時間 <b>${formatDuration(r.detail.durationSec)}</b></div>${teams}<details class="match-log"><summary>App 做了什麼（${r.log.length} 行）</summary>${log}</details>`;
+  return `${card}<div class="match-dur">遊戲時間 <b>${formatDuration(detail.durationSec)}</b></div>${teams}<details class="match-log"><summary>App 做了什麼（${r.log.length} 行）</summary>${log}</details>`;
 }
 
-/** One line per game, newest first; the record's own log lines expand below it. */
+/** One line per game, newest first and opened; the record's own log lines expand below it. */
 export function matchListHtml(records: MatchRecord[], nameOf: (id: number) => string): string {
   if (!records.length) {
     return `<div class="card-desc">還沒有對戰紀錄。打完一場 ARAM 或 Mayhem 後會出現在這裡。</div>`;
   }
   return [...records]
     .reverse()
-    .map((r) => {
+    .map((r, i) => {
       const res = resultLabel(r.result);
       const champ = r.championId == null ? "—" : nameOf(r.championId);
       const me = r.detail?.players.find((p) => p.isMe);
@@ -203,7 +311,7 @@ export function matchListHtml(records: MatchRecord[], nameOf: (id: number) => st
       const dmg = me ? formatK(me.damageToChampions) : "—";
       const gold = me ? formatK(me.gold) : "—";
       const augs = me ? augmentIconsHtml(me.augments) : "";
-      return `<details class="match"><summary><span class="t">${escapeHtml(formatMatchTime(r.date, r.time))}</span><span>${escapeHtml(queueModeLabel(r.queueId))}</span><span class="champ">${escapeHtml(champ)}</span><span class="kda">${kda}</span><span class="dmg">${dmg}</span><span class="gold">${gold}</span><span class="augs">${augs}</span><span class="res ${res.cls}">${escapeHtml(res.text)}</span><span class="acts">${escapeHtml(actionsText(r.actions))}</span></summary>${matchBodyHtml(r, nameOf)}</details>`;
+      return `<details class="match"${i === 0 ? " open" : ""}><summary><span class="t">${escapeHtml(formatMatchTime(r.date, r.time))}</span><span>${escapeHtml(queueModeLabel(r.queueId))}</span><span class="champ">${escapeHtml(champ)}</span><span class="kda">${kda}</span><span class="dmg">${dmg}</span><span class="gold">${gold}</span><span class="augs">${augs}</span><span class="res ${res.cls}">${escapeHtml(res.text)}</span><span class="acts">${escapeHtml(actionsText(r.actions))}</span></summary>${matchBodyHtml(r, nameOf)}</details>`;
     })
     .join("");
 }
