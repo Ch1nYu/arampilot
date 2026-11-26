@@ -1160,6 +1160,13 @@ impl LcuManager {
             .await
     }
 
+    /// One game with every participant; `None` when the client does not know it
+    /// (only the ~20 games [`Self::fetch_match_history`] lists are kept).
+    pub async fn fetch_game(&self, game_id: i64) -> Option<serde_json::Value> {
+        self.get_json_opt(&format!("/lol-match-history/v1/games/{game_id}"))
+            .await
+    }
+
     /// Honor ballot of the just-finished game; `None` when unavailable
     /// (the ballot only exists between the end of the game and `play_again`).
     pub async fn fetch_honor_ballot(&self) -> Option<serde_json::Value> {

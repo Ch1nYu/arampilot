@@ -523,8 +523,8 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 /* 紀錄 page, 對戰 view: one line per game, that game's log lines expand below it. */
 .match { border-top: 1px solid var(--line); }
 .match:first-child { border-top: 0; }
-.match summary { display: grid; grid-template-columns: 84px 64px minmax(0, 1fr) 52px minmax(0, 2fr); gap: 10px; align-items: center; padding: 8px 0; font-size: 12px; cursor: pointer; list-style: none; }
-.match summary::-webkit-details-marker { display: none; }
+.match > summary { display: grid; grid-template-columns: 84px 60px minmax(0, 1fr) 60px 46px 44px 106px 40px minmax(0, 2fr); gap: 8px; align-items: center; padding: 8px 0; font-size: 12px; cursor: pointer; list-style: none; }
+.match > summary::-webkit-details-marker { display: none; }
 .match .t { color: var(--dim); font-family: var(--mono); font-size: 11px; }
 .match .champ, .match .acts { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .match .acts { color: var(--muted); }
@@ -532,4 +532,39 @@ button.spell:hover { border-color: var(--accent); color: var(--accent); }
 .res.loss { color: var(--danger); }
 .res.other { color: var(--muted); }
 .match > .log { padding: 0 0 8px 12px; }
-.match[open] summary { color: var(--text); }
+.match[open] > summary { color: var(--text); }
+
+/* Summary line: own KDA, damage, gold and up to six augment icons, all mono except the icons. */
+.match > summary .kda, .match > summary .dmg, .match > summary .gold { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; overflow: hidden; }
+.match > summary .augs { display: flex; align-items: center; gap: 2px; overflow: hidden; }
+.match > summary .augs img { width: 16px; height: 16px; border-radius: 3px; display: block; flex: none; border: 1px solid var(--line); }
+
+/* Expanded detail: duration line, two team tables, then the execution log folded away. */
+.match .match-dur { font-size: 12px; color: var(--muted); padding: 0 0 6px 12px; }
+.match .match-dur b { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.match .team { --cols: 22px minmax(0, 1fr) 28px 60px 58px 46px 46px 118px 138px; padding: 0 0 6px 12px; }
+.match .team + .team { margin-top: 4px; }
+.match .team-hd { font-size: 12px; color: var(--muted); padding: 4px 0; }
+.match .team-hd b { color: var(--text); font-weight: 600; }
+.match .team > .hd, .match .team > .pl { display: grid; grid-template-columns: var(--cols); gap: 6px; align-items: center; }
+.match .team > .hd { font-size: 10px; color: var(--dim); padding: 4px 0; border-bottom: 1px solid var(--line); }
+.match .team > .pl { font-size: 12px; padding: 3px 0; border-radius: 4px; }
+.match .team > .pl.me { background: var(--panel2); }
+.match .pl .champ-ic { width: 22px; height: 22px; border-radius: 4px; display: block; object-fit: cover; }
+.match .pl .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match .pl .lv, .match .pl .kda, .match .pl .taken, .match .pl .gold { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.match .pl .dmg { display: flex; flex-direction: column; gap: 2px; }
+.match .pl .dmg .n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.match .pl .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.match .pl .bar i { display: block; height: 100%; background: var(--muted); }
+.match .pl .augs, .match .pl .items { display: flex; gap: 2px; overflow: hidden; }
+.match .pl .augs img, .match .pl .items img { width: 18px; height: 18px; border-radius: 4px; display: block; flex: none; }
+.match .pl .augs img { border: 1px solid var(--line); }
+.match .pl .augs .aug-silver { border-color: #A9B1BA; }
+.match .pl .augs .aug-gold { border-color: #D9B45A; }
+.match .pl .augs .aug-prismatic { border-color: #B98BF0; }
+.match .match-log { margin-top: 6px; padding-left: 12px; }
+.match .match-log > summary { display: block; font-size: 12px; color: var(--muted); padding: 4px 0; cursor: pointer; list-style: none; }
+.match .match-log > summary::-webkit-details-marker { display: none; }
+.match .match-log > summary:hover { color: var(--text); }
+.match .match-log .log { padding: 0 0 8px 0; }

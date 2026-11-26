@@ -8,6 +8,7 @@ pub mod livegame;
 pub mod postgame;
 pub mod single_instance;
 mod bench;
+mod game_data;
 mod invites;
 mod match_history;
 
@@ -919,8 +920,9 @@ async fn track_match_phase(app: &tauri::AppHandle, lcu: &SharedLcu, tracker: &Sh
     }
 }
 
-/// Appends a finished record and, for a played game, fills its result from the
-/// client's match history once the client has it (it lags the end of the game).
+/// Appends a finished record and, while the client has not filled its result
+/// and per-game detail yet (its match history lags the end of the game),
+/// retries the backfill.
 fn save_match_record(app: &tauri::AppHandle, lcu: &SharedLcu, record: match_history::MatchRecord) {
     let path = match_history_path();
     {
@@ -928,7 +930,7 @@ fn save_match_record(app: &tauri::AppHandle, lcu: &SharedLcu, record: match_hist
         let _ = match_history::append_record(&path, &record, match_history::KEEP_RECORDS);
     }
     let _ = app.emit("match-history-updated", ());
-    if record.result != match_history::MatchResult::Unknown || record.game_id.is_none() {
+    if !match_history::needs_detail(&record) {
         return;
     }
     let (app, lcu) = (app.clone(), Arc::clone(lcu));
@@ -938,9 +940,9 @@ fn save_match_record(app: &tauri::AppHandle, lcu: &SharedLcu, record: match_hist
             if backfill_match_results(&lcu).await {
                 let _ = app.emit("match-history-updated", ());
             }
-            let resolved = match_history::read_records(&path)
+            let resolved = !match_history::read_records(&path)
                 .iter()
-                .any(|r| r.game_id == record.game_id && r.result != match_history::MatchResult::Unknown);
+                .any(|r| r.game_id == record.game_id && match_history::needs_detail(r));
             if resolved {
                 return;
             }
@@ -948,27 +950,77 @@ fn save_match_record(app: &tauri::AppHandle, lcu: &SharedLcu, record: match_hist
     });
 }
 
-/// Fills unknown results from the client's recent match history; true when the file changed.
+/// Fills unknown results and missing per-game details from the client's recent
+/// match history; true when the file changed.
+///
+/// Only games the client still lists are fetched: older ids would answer 404 on
+/// every page open.
 async fn backfill_match_results(lcu: &SharedLcu) -> bool {
     let path = match_history_path();
-    let pending = match_history::read_records(&path).iter().any(|r| {
-        r.result == match_history::MatchResult::Unknown && r.game_id.is_some()
-    });
-    if !pending {
+    let records = match_history::read_records(&path);
+    let mut wanted: Vec<i64> = records
+        .iter()
+        .filter(|record| match_history::needs_detail(record))
+        .filter_map(|record| record.game_id)
+        .collect();
+    let unknown = records
+        .iter()
+        .any(|r| r.result == match_history::MatchResult::Unknown && r.game_id.is_some());
+    if wanted.is_empty() && !unknown {
         return false;
     }
-    let Some(games) = lcu.fetch_match_history().await else {
+    let Some(list) = lcu.fetch_match_history().await else {
         return false;
     };
+    let listed = match_history::listed_game_ids(&list);
+    wanted.retain(|game_id| listed.contains(game_id));
+    wanted.sort_unstable();
+    let mut games = Vec::with_capacity(wanted.len());
+    for game_id in wanted {
+        if let Some(game) = lcu.fetch_game(game_id).await {
+            games.push((game_id, game));
+        }
+    }
+    let details = if games.is_empty() {
+        Vec::new()
+    } else {
+        let (mut augment_ids, mut item_ids) = (Vec::new(), Vec::new());
+        for (_, game) in &games {
+            let (augments, items) = match_history::picked_ids(game);
+            augment_ids.extend(augments);
+            item_ids.extend(items);
+        }
+        let data = game_data::ensure(lcu, &augment_ids, &item_ids).await;
+        let augments = game_data::augment_table(&data);
+        let my_puuid = lcu
+            .fetch_current_summoner()
+            .await
+            .and_then(|summoner| {
+                let puuid = summoner.get("puuid")?.as_str()?;
+                Some(puuid.to_string())
+            })
+            .unwrap_or_default();
+        games
+            .iter()
+            .filter_map(|(game_id, game)| {
+                match_history::parse_game_detail(game, &my_puuid, &augments)
+                    .map(|detail| (*game_id, detail))
+            })
+            .collect::<Vec<_>>()
+    };
+    // Re-read under the lock: a record may have been appended while fetching.
     let _guard = MATCH_FILE.lock();
     let mut records = match_history::read_records(&path);
-    if !match_history::apply_match_history(&mut records, &games) {
+    let resolved = match_history::apply_match_history(&mut records, &list);
+    let detailed = match_history::apply_details(&mut records, details);
+    if !(resolved || detailed) {
         return false;
     }
     match_history::write_records(&path, &records, match_history::KEEP_RECORDS).is_ok()
 }
 
-/// Recorded games, oldest first, with any results the client now knows filled in.
+/// Recorded games, oldest first, with any results and per-game details the
+/// client now knows filled in.
 #[tauri::command]
 async fn get_match_history(lcu: State<'_, SharedLcu>) -> Result<Vec<match_history::MatchRecord>, String> {
     backfill_match_results(&lcu).await;

@@ -1,10 +1,14 @@
-//! Disk cache for champion and summoner-spell icon PNGs.
+//! Disk cache for champion, summoner-spell, augment and item icon PNGs.
 //!
 //! The webview loads icons through the custom `icon` protocol; lookup order is
 //! the cache folder, the local League client (LCU) assets, and the
 //! CommunityDragon CDN as a last resort. Everything fetched is written back to
 //! the cache folder, and the whole set is re-downloaded whenever the connected
 //! client reports a different build version than the one stored in the folder.
+//!
+//! Champions and spells have a fixed asset path. An augment or item icon exists
+//! only in the client's own tables (`crate::game_data`), so its path is unknown
+//! until that table has been fetched; such a key is skipped, not fetched.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,10 +23,21 @@ pub enum IconKey {
     Champion(i32),
     /// A summoner-spell icon by file stem (e.g. `summoner_flash`).
     Spell(String),
+    /// An augment icon by augment id (e.g. 2141).
+    Augment(i64),
+    /// An item icon by item id (e.g. 226668).
+    Item(i64),
 }
 
 /// Longest allowed spell icon file stem (guard against absurd URLs).
 const SPELL_NAME_MAX: usize = 64;
+
+/// Prefix every client asset path carries.
+const ASSET_PREFIX: &str = "/lol-game-data/assets/";
+
+/// CommunityDragon tree that mirrors [`ASSET_PREFIX`].
+const CDN_ASSET_PREFIX: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/";
 
 /// Champion ids: 1..=6 ASCII digits and a positive value.
 fn parse_champion_id(raw: &str) -> Option<i32> {
@@ -30,6 +45,15 @@ fn parse_champion_id(raw: &str) -> Option<i32> {
         return None;
     }
     let id: i32 = raw.parse().ok()?;
+    (id > 0).then_some(id)
+}
+
+/// Augment and item ids: 1..=7 ASCII digits and a positive value.
+fn parse_table_id(raw: &str) -> Option<i64> {
+    if raw.is_empty() || raw.len() > 7 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let id: i64 = raw.parse().ok()?;
     (id > 0).then_some(id)
 }
 
@@ -46,10 +70,11 @@ fn parse_spell_name(raw: &str) -> Option<String> {
     Some(raw.to_string())
 }
 
-/// Parse a protocol URL path (`/champion/266.png`, `/spell/summoner_flash.png`)
-/// into an icon key. Anything else — other segments, uppercase, `..`,
-/// backslash, `%`, extra slashes, missing or different extension, empty id —
-/// is rejected so no caller-controlled string reaches the filesystem.
+/// Parse a protocol URL path (`/champion/266.png`, `/spell/summoner_flash.png`,
+/// `/augment/2141.png`, `/item/226668.png`) into an icon key. Anything else —
+/// other segments, uppercase, `..`, backslash, `%`, extra slashes, missing or
+/// different extension, empty id — is rejected so no caller-controlled string
+/// reaches the filesystem.
 pub fn parse_icon_path(path: &str) -> Option<IconKey> {
     let rest = path.strip_prefix('/')?;
     let mut segments = rest.split('/');
@@ -63,15 +88,20 @@ pub fn parse_icon_path(path: &str) -> Option<IconKey> {
     match kind {
         "champion" => Some(IconKey::Champion(parse_champion_id(stem)?)),
         "spell" => Some(IconKey::Spell(parse_spell_name(stem)?)),
+        "augment" => Some(IconKey::Augment(parse_table_id(stem)?)),
+        "item" => Some(IconKey::Item(parse_table_id(stem)?)),
         _ => None,
     }
 }
 
-/// Cache file name for an icon key (`champion-266.png`, `spell-summoner_flash.png`).
+/// Cache file name for an icon key (`champion-266.png`, `spell-summoner_flash.png`,
+/// `augment-2141.png`, `item-226668.png`).
 pub fn file_name(key: &IconKey) -> String {
     match key {
         IconKey::Champion(id) => format!("champion-{id}.png"),
         IconKey::Spell(name) => format!("spell-{name}.png"),
+        IconKey::Augment(id) => format!("augment-{id}.png"),
+        IconKey::Item(id) => format!("item-{id}.png"),
     }
 }
 
@@ -83,26 +113,51 @@ pub fn key_from_file_name(name: &str) -> Option<IconKey> {
     if let Some(rest) = name.strip_prefix("spell-") {
         return Some(IconKey::Spell(parse_spell_name(rest.strip_suffix(".png")?)?));
     }
+    if let Some(rest) = name.strip_prefix("augment-") {
+        return Some(IconKey::Augment(parse_table_id(rest.strip_suffix(".png")?)?));
+    }
+    if let Some(rest) = name.strip_prefix("item-") {
+        return Some(IconKey::Item(parse_table_id(rest.strip_suffix(".png")?)?));
+    }
     None
 }
 
-/// LCU asset path for an icon key.
-pub fn lcu_path(key: &IconKey) -> String {
+/// LCU asset path for an icon key; `None` for an augment or item the client's
+/// table has no icon path for (or has not been asked for yet).
+pub fn lcu_path(key: &IconKey) -> Option<String> {
     match key {
-        IconKey::Champion(id) => format!("/lol-game-data/assets/v1/champion-icons/{id}.png"),
-        IconKey::Spell(name) => format!("/lol-game-data/assets/data/spells/icons2d/{name}.png"),
+        IconKey::Champion(id) => Some(format!("/lol-game-data/assets/v1/champion-icons/{id}.png")),
+        IconKey::Spell(name) => Some(format!("/lol-game-data/assets/data/spells/icons2d/{name}.png")),
+        IconKey::Augment(_) | IconKey::Item(_) => crate::game_data::icon_asset_path(key),
     }
 }
 
-/// CommunityDragon CDN URL for an icon key (last-resort source).
-pub fn cdn_url(key: &IconKey) -> String {
+/// CommunityDragon URL of one client asset path (the CDN's mirror of it).
+///
+/// Mirror rule: only paths under `/lol-game-data/assets/` exist there, the rest
+/// of the path is lowercased, and the CDN tree root is prefixed. `None` when
+/// the path is not one of those client assets.
+pub fn cdn_url_for_asset(asset_path: &str) -> Option<String> {
+    let rest = asset_path.strip_prefix(ASSET_PREFIX)?;
+    if rest.is_empty() {
+        return None;
+    }
+    Some(format!("{CDN_ASSET_PREFIX}{}", rest.to_ascii_lowercase()))
+}
+
+/// CommunityDragon CDN URL for an icon key (last-resort source); `None` under
+/// the same condition as [`lcu_path`].
+pub fn cdn_url(key: &IconKey) -> Option<String> {
     match key {
-        IconKey::Champion(id) => format!(
+        IconKey::Champion(id) => Some(format!(
             "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/{id}.png"
-        ),
-        IconKey::Spell(name) => format!(
+        )),
+        IconKey::Spell(name) => Some(format!(
             "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/{name}.png"
-        ),
+        )),
+        IconKey::Augment(_) | IconKey::Item(_) => {
+            cdn_url_for_asset(&crate::game_data::icon_asset_path(key)?)
+        }
     }
 }
 
@@ -193,16 +248,20 @@ pub async fn load(lcu: &LcuManager, dir: &Path, key: &IconKey) -> Option<Vec<u8>
     }
 
     // 2. Local client assets when a client is connected.
+    let lcu_asset = lcu_path(key);
     let mut bytes: Option<Vec<u8>> = None;
-    if lcu.is_connected().await
-        && let Ok(fetched) = lcu.fetch_asset(&lcu_path(key)).await
+    if let Some(asset) = lcu_asset.as_deref()
+        && lcu.is_connected().await
+        && let Ok(fetched) = lcu.fetch_asset(asset).await
     {
         bytes = Some(fetched);
     }
 
     // 3. CDN last resort: also covers an LCU reply that is not real PNG data.
+    // An unknown asset path (an augment or item the table does not know) has
+    // no CDN mirror either, so the icon is simply unavailable.
     if bytes.as_ref().is_none_or(|b| !is_png(b)) {
-        let res = cdn_client().get(cdn_url(key)).send().await.ok()?;
+        let res = cdn_client().get(cdn_url(key)?).send().await.ok()?;
         if !res.status().is_success() {
             return None;
         }
@@ -260,9 +319,14 @@ pub async fn refresh_if_version_changed(lcu: &LcuManager, dir: &Path) -> Option<
     }
 
     // Sequential on purpose: one request at a time keeps the client responsive.
+    // A key without a known asset path (an augment or item the table has no
+    // entry for) is neither a success nor a failure: nothing to download.
     let mut failures = 0usize;
     for key in &keys {
-        match lcu.fetch_asset(&lcu_path(key)).await {
+        let Some(path) = lcu_path(key) else {
+            continue;
+        };
+        match lcu.fetch_asset(&path).await {
             Ok(bytes) if is_png(&bytes) => {
                 if write_atomic(dir, &file_name(key), &bytes).is_err() {
                     failures += 1;
@@ -312,6 +376,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_icon_path_accepts_valid_augment_and_item_paths() {
+        assert_eq!(parse_icon_path("/augment/2141.png"), Some(IconKey::Augment(2141)));
+        assert_eq!(parse_icon_path("/item/226668.png"), Some(IconKey::Item(226668)));
+        // 7 digits still fit, the value only has to stay positive.
+        assert_eq!(parse_icon_path("/item/9999999.png"), Some(IconKey::Item(9999999)));
+    }
+
+    #[test]
+    fn test_parse_icon_path_rejects_bad_augment_and_item_paths() {
+        // Zero is not a table id; 8 digits exceed the cap.
+        assert_eq!(parse_icon_path("/augment/0.png"), None);
+        assert_eq!(parse_icon_path("/item/12345678.png"), None);
+        // The kind segment is lowercase and the id is digits only.
+        assert_eq!(parse_icon_path("/Augment/1.png"), None);
+        assert_eq!(parse_icon_path("/Item/226668.png"), None);
+        assert_eq!(parse_icon_path("/item/ab.png"), None);
+        assert_eq!(parse_icon_path("/augment/.png"), None);
+        assert_eq!(parse_icon_path("/item/226668.jpg"), None);
+        assert_eq!(parse_icon_path("/item/226668"), None);
+        // Same segment and traversal rules as the other kinds.
+        assert_eq!(parse_icon_path("/item/../226668.png"), None);
+        assert_eq!(parse_icon_path("/item/226668.png/extra.png"), None);
+        assert_eq!(parse_icon_path("item/226668.png"), None);
+    }
+
+    #[test]
     fn test_parse_icon_path_rejects_traversal_and_extra_segments() {
         assert_eq!(parse_icon_path("/champion/../x.png"), None);
         assert_eq!(parse_icon_path("/champion/266.png/extra.png"), None);
@@ -348,12 +438,16 @@ mod tests {
             IconKey::Champion(1),
             IconKey::Spell("summoner_flash".to_string()),
             IconKey::Spell("summonerboost".to_string()),
+            IconKey::Augment(2141),
+            IconKey::Item(226668),
         ] {
             let name = file_name(&key);
             assert_eq!(key_from_file_name(&name), Some(key));
         }
         assert_eq!(file_name(&IconKey::Champion(266)), "champion-266.png");
         assert_eq!(file_name(&IconKey::Spell("summoner_flash".to_string())), "spell-summoner_flash.png");
+        assert_eq!(file_name(&IconKey::Augment(2141)), "augment-2141.png");
+        assert_eq!(file_name(&IconKey::Item(226668)), "item-226668.png");
     }
 
     #[test]
@@ -363,26 +457,70 @@ mod tests {
         assert_eq!(key_from_file_name("champion-0.png"), None);
         assert_eq!(key_from_file_name("champion-266.txt"), None);
         assert_eq!(key_from_file_name("spell-Bad_Name.png"), None);
+        assert_eq!(key_from_file_name("augment-0.png"), None);
+        assert_eq!(key_from_file_name("item-12345678.png"), None);
+        assert_eq!(key_from_file_name("item-226668.png.tmp"), None);
         assert_eq!(key_from_file_name("icon.png"), None);
     }
 
     #[test]
     fn test_lcu_path_and_cdn_url_exact_strings() {
         let champion = IconKey::Champion(266);
-        assert_eq!(lcu_path(&champion), "/lol-game-data/assets/v1/champion-icons/266.png");
+        assert_eq!(lcu_path(&champion).as_deref(), Some("/lol-game-data/assets/v1/champion-icons/266.png"));
         assert_eq!(
-            cdn_url(&champion),
-            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/266.png"
+            cdn_url(&champion).as_deref(),
+            Some(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/266.png"
+            )
         );
         let spell = IconKey::Spell("summoner_flash".to_string());
         assert_eq!(
-            lcu_path(&spell),
-            "/lol-game-data/assets/data/spells/icons2d/summoner_flash.png"
+            lcu_path(&spell).as_deref(),
+            Some("/lol-game-data/assets/data/spells/icons2d/summoner_flash.png")
         );
         assert_eq!(
-            cdn_url(&spell),
-            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/summoner_flash.png"
+            cdn_url(&spell).as_deref(),
+            Some(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/summoner_flash.png"
+            )
         );
+    }
+
+    #[test]
+    fn test_unknown_table_ids_have_no_path() {
+        // Ids no real table can carry, so the assertion holds whatever the
+        // process cache was loaded from; champion and spell stay unaffected.
+        let augment = IconKey::Augment(i64::MAX - 1);
+        let item = IconKey::Item(i64::MAX - 2);
+        assert_eq!(lcu_path(&augment), None);
+        assert_eq!(cdn_url(&augment), None);
+        assert_eq!(lcu_path(&item), None);
+        assert_eq!(cdn_url(&item), None);
+    }
+
+    #[test]
+    fn test_cdn_url_for_asset_mirrors_client_assets() {
+        assert_eq!(
+            cdn_url_for_asset("/lol-game-data/assets/ASSETS/UX/Kiwi/Augments/Icons/UltraHydra_small.png")
+                .as_deref(),
+            Some(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/ux/kiwi/augments/icons/ultrahydra_small.png"
+            )
+        );
+        assert_eq!(
+            cdn_url_for_asset(
+                "/lol-game-data/assets/ASSETS/Items/Icons2D/3071_Fighter_T3_BlackCleaver.png"
+            )
+            .as_deref(),
+            Some(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/3071_fighter_t3_blackcleaver.png"
+            )
+        );
+        // Anything not under the client asset prefix has no mirror.
+        assert_eq!(cdn_url_for_asset("/assets/Items/Icons2D/3071.png"), None);
+        assert_eq!(cdn_url_for_asset("/lol-game-data/assets/"), None);
+        assert_eq!(cdn_url_for_asset(""), None);
+        assert_eq!(cdn_url_for_asset("https://example.com/x.png"), None);
     }
 
     #[test]
