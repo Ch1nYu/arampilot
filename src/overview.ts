@@ -45,6 +45,7 @@ let assistState: AssistState = emptyAssist();
 export let lastChampSelectData: any = null;
 export let overviewMyChampId = 0;
 let ovSpellTrayOpen = false;
+let ovTrayDismissBound = false;
 
 /** Adopt backend champ select verdicts; main.ts hands them over on `lcu-champ-select-state`. */
 export function setChampUiState(next: Partial<ChampSelectUiState>) {
@@ -123,13 +124,13 @@ function renderOverviewSpells(myChamp: TierChampion | undefined): string {
   };
   // Collapsed, an extra secondary is shown on the toggle chip so it stays visible as selected.
   const collapsedExtra = extraSelected != null && !ovSpellTrayOpen;
-  const moreBtn = `<button class="spell more${collapsedExtra ? " on" : ""}" data-toggle-more-spells="1" title="${escapeHtml(
+  const moreBtn = `<button class="spell more${collapsedExtra ? " on" : ""}" data-toggle-more-spells="1" aria-expanded="${ovSpellTrayOpen}" title="${escapeHtml(
     collapsedExtra ? `其他召喚師技能（目前：${spellName(extraSelected)}）` : "展開其他召喚師技能"
   )}">${collapsedExtra ? `${spellIconHtml(extraSelected)}<span class="key">${secKey}</span>` : "⋯"}</button>`;
   const extras = ovSpellTrayOpen ? EXTRA_SECONDARY_SPELL_IDS.map(pick).join("") : "";
   const flash = `<span class="spell">${spellIconHtml(FLASH_SPELL_ID)}<span class="key">${primaryKey}</span></span>`;
 
-  return `<div class="spells">${flash}${MAIN_SECONDARY_SPELL_IDS.map(pick).join("")}${moreBtn}${extras}</div>`;
+  return `<div class="spells" data-ov-spells="1">${flash}${MAIN_SECONDARY_SPELL_IDS.map(pick).join("")}${moreBtn}${extras}</div>`;
 }
 
 function renderBenchColumn(
@@ -396,6 +397,7 @@ export function resetOverviewMiniCards() {
   lastChampSelectData = null;
   champUiState = { ...EMPTY_UI_STATE };
   assistState = emptyAssist();
+  ovSpellTrayOpen = false;
   renderOverviewColumns();
 }
 
@@ -435,6 +437,25 @@ export function initOverview(d: OverviewDeps) {
     if (!pick) return;
     void pickSecondarySpell(Number(pick.dataset.pickSpell));
   });
+
+  if (!ovTrayDismissBound) {
+    ovTrayDismissBound = true;
+    document.addEventListener("click", (e) => {
+      if (!ovSpellTrayOpen) return;
+      const insideSpells = e
+        .composedPath()
+        .some((node) => node instanceof Element && node.hasAttribute("data-ov-spells"));
+      if (insideSpells) return;
+      ovSpellTrayOpen = false;
+      renderOverviewColumns();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && ovSpellTrayOpen) {
+        ovSpellTrayOpen = false;
+        renderOverviewColumns();
+      }
+    });
+  }
 
   document.getElementById("tradeAlert")?.addEventListener("click", (e) => {
     const acc = (e.target as HTMLElement).closest("[data-accept-trade]") as HTMLElement | null;

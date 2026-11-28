@@ -200,17 +200,16 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 
 /* ---------- Settings rows：label 左、控件右、右緣同一欄 ---------- */
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; }
-.set-row + .set-row { border-top: 1px solid var(--line); }
+.set-row + .set-row, .set-row + .row, .row + .set-row, .row + .row { border-top: 1px solid var(--line); }
 .set-lab { font-size: 13px; font-weight: 600; flex: none; white-space: nowrap; }
-#updateStatusText { flex: 1 1 auto; white-space: normal; min-width: 0; }
+.update-status { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 400; color: var(--muted); white-space: normal; line-height: 1.5; }
 .set-row-top { align-items: flex-start; }
 .set-row-top > .set-lab { padding-top: 6px; }
 .set-val { font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
 .sliderbox { display: flex; align-items: center; gap: 12px; flex: none; }
 .row { display: flex; align-items: center; gap: 16px; padding: 11px 0; }
-.row + .row { border-top: 1px solid var(--line); }
 .row .label { flex: 1; min-width: 0; }
-.row .label b { display: block; font-weight: 500; font-size: 13px; }
+.row .label b { display: block; font-weight: 600; font-size: 13px; }
 .row .label span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 
 /* ---------- Controls：同高同幾何 ---------- */
@@ -311,11 +310,12 @@ a.go:hover { text-decoration: underline; }
 .spells { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .spell { display: flex; align-items: center; gap: 7px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 6px 6px; font: inherit; font-size: 13px; color: inherit; }
 button.spell { cursor: pointer; transition: border-color .15s, color .15s; }
+button.spell:not(.on):not(.more) { padding: 6px; justify-content: center; }
 button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(--accent)); }
 .spell.on { border-color: var(--accent); color: var(--accent-text, var(--accent)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .spell.more { padding: 6px 12px; color: var(--muted); font-size: 14px; line-height: 26px; }
 .spell.more.on { padding: 6px 12px 6px 6px; line-height: normal; }
-.spell img { width: 26px; height: 26px; border-radius: 6px; }
+.spell img, .spell .ph { width: 26px; height: 26px; border-radius: 6px; }
 .spell .key { font-family: var(--mono); font-size: 12px; color: var(--text); border: 1px solid var(--line2); padding: 2px 6px; border-radius: 4px; }
 .hero-tag { margin-top: auto; padding-top: 20px; }
 .hero-tag .tag { display: inline-block; font-size: 12px; padding: 3px 10px; border-radius: var(--radius-pill); border: 1px solid var(--ok); color: var(--ok); }
@@ -355,7 +355,7 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
 .spell-btn:hover { border-color: var(--accent); }
 .spell-btn.on { border-color: var(--accent); color: var(--accent-text, var(--accent)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .spell-btn .spell-ic, .spell-btn .ph { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; flex: none; display: block; }
-.spell-tray { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: none; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--line2); border-radius: var(--radius); box-shadow: 0 10px 24px rgba(0, 0, 0, .45); }
+.spell-tray { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: none; flex-wrap: wrap; max-width: calc(100vw - 48px); gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--line2); border-radius: var(--radius); box-shadow: 0 10px 24px rgba(0, 0, 0, .45); }
 .spell-tray.open { display: flex; }
 .spell-tray .spell-btn { flex: none; }
 
@@ -414,13 +414,16 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
 .verdict .why { color: var(--muted); font-size: 12px; }
 
 /* chat */
+.row.chat-row { align-items: flex-start; }
+.row.chat-row .label { flex: 0 0 216px; padding-top: 2px; }
+.chat-msgs-col { flex: 1; min-width: 0; }
 .msgs { display: flex; flex-direction: column; gap: 6px; }
-.msg { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); }
-.msg span { flex: 1; }
-.msg button { background: none; border: 0; color: var(--dim); cursor: pointer; font-size: 14px; }
+.msg { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); font-size: 13px; line-height: 1.45; }
+.msg span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.msg button { background: none; border: 0; color: var(--dim); cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 4px; flex: none; }
 .msg button:hover { color: var(--danger); }
 .addrow { display: flex; gap: 8px; margin-top: 8px; }
-.addrow .input { flex: 1; }
+.addrow .input { flex: 1; min-width: 0; }
 .var { font-family: var(--mono); color: var(--accent-text, var(--accent)); font-size: 12px; }
 
 /* battle */
@@ -437,6 +440,9 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
 .vs { display: grid; grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr); align-items: center; gap: 8px; margin: 14px 0 12px; }
 .fighter { min-width: 0; background: var(--panel2); border: 1px solid var(--line2); border-radius: var(--radius); padding: 22px 10px; display: flex; flex-direction: column; align-items: center; gap: 10px; cursor: pointer; transition: transform .15s, border-color .15s; }
 .fighter:hover { border-color: var(--accent); transform: translateY(-3px); }
+.fighter.is-empty { cursor: default; text-align: center; justify-content: center; }
+.fighter.is-empty:hover { border-color: var(--line2); transform: none; }
+.fighter.is-empty .meta { line-height: 1.5; }
 .fighter img, .fighter .ph { width: 116px; height: 116px; border-radius: var(--radius-img); object-fit: cover; font-size: 34px; }
 .fighter .nm { font-size: 18px; font-weight: 700; font-family: var(--head); }
 .fighter .meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
@@ -477,6 +483,9 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
   transition: border-color .15s, transform .15s;
 }
 .flash-card:hover { border-color: var(--accent); }
+.flash-card.is-empty { width: min(360px, 100%); cursor: default; text-align: center; }
+.flash-card.is-empty:hover { border-color: var(--line2); }
+.flash-card.is-empty .meta { line-height: 1.5; }
 .flash-card img, .flash-card .ph { width: 108px; height: 108px; border-radius: var(--radius-img); object-fit: cover; font-size: 32px; pointer-events: none; }
 .flash-card .nm { font-size: 18px; font-weight: 700; font-family: var(--head); }
 .flash-card .meta { font-size: 12px; color: var(--muted); font-family: var(--mono); }
@@ -522,18 +531,22 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
 @keyframes nudge { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 .nudge { animation: nudge .25s ease-in-out 2; outline: 1px solid var(--accent); }
 
-/* In-app confirm dialog (confirmDialog in main.ts). */
+/* In-app confirm dialog (confirmDialog in dialogs.ts). */
 .confirm-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.confirm-box { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
+.confirm-box { margin: 0; width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
 .confirm-box h3 { margin: 0; font-size: 15px; }
 /* Keep line breaks in dialog text (release notes); long text scrolls. */
 .confirm-box .card-desc { white-space: pre-line; max-height: 260px; overflow-y: auto; }
+.confirm-box .input.invalid { border-color: var(--danger); }
+.confirm-error { font-size: 12px; color: var(--danger); margin-top: -4px; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* Remembered per-champion secondary spells (settings) */
-.spell-mem-toggle { background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 0; }
+.spell-mem-head { align-items: center; }
+.spell-mem-head .btn { flex: none; }
+.spell-mem-toggle { background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px; line-height: 1.45; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 0; text-align: left; min-width: 0; flex: 0 1 auto; }
 .spell-mem-toggle:hover { color: var(--text); }
-.spell-mem-toggle .chev { transition: transform .15s; font-size: 12px; }
+.spell-mem-toggle .chev { display: inline-flex; align-items: center; justify-content: center; width: 14px; flex: none; transition: transform .15s; font-size: 12px; line-height: 1; }
 .spell-mem-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
 .spell-mem-toggle.empty { cursor: default; }
 .spell-mem-toggle.empty .chev { display: none; }
@@ -826,6 +839,8 @@ button.spell:hover { border-color: var(--accent); color: var(--accent-text, var(
   .card { padding: 14px; }
   .cols { grid-template-columns: minmax(0, 1fr); }
   .set-row { flex-wrap: wrap; }
+  .row.chat-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .row.chat-row .label { flex: none; padding-top: 0; }
   .seg { height: auto; min-height: 30px; flex-wrap: wrap; }
   .seg button { min-height: 24px; padding: 3px 9px; }
   .bt-wrap { grid-template-columns: minmax(0, 1fr); }

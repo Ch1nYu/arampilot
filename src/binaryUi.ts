@@ -178,6 +178,7 @@ function renderBinary() {
   const elL = document.getElementById("binL");
   const elR = document.getElementById("binR");
   if (elL && elR) {
+    let pairRendered = false;
     if (total < 2) {
       elL.innerHTML = `
       <div class="nm">此階層英雄不足 2 隻</div>
@@ -193,6 +194,7 @@ function renderBinary() {
       const pivotId = active.sorted[mid];
       const challenger = state.profileList.find((c) => c.id === active.current);
       const pivot = state.profileList.find((c) => c.id === pivotId);
+      pairRendered = Boolean(challenger && pivot);
       elL.innerHTML =
         challenger && pivot
           ? fighterHtml(challenger, `待定位 · 剩 ${active.queue.length + 1} 隻`, `← 比較想玩：排到【${pivot.n}】前面`)
@@ -202,6 +204,8 @@ function renderBinary() {
           ? fighterHtml(pivot, `第 ${mid + 1} 名（守門員）`, `→ 比較想玩：【${challenger.n}】排到後面`)
           : `<div class="nm">—</div>`;
     }
+    elL.classList.toggle("is-empty", !pairRendered);
+    elR.classList.toggle("is-empty", !pairRendered);
   }
 
   setDisabled("binUndo", (undoStacks[currentTier]?.length ?? 0) === 0);

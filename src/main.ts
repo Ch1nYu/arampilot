@@ -236,8 +236,12 @@ function renderDefaultSpellPicker() {
   const extraSelected = EXTRA_SECONDARY_SPELL_IDS.includes(current) ? current : null;
   const thirdButton =
     extraSelected != null
-      ? spellButtonHtml(extraSelected, true, `data-toggle-default-spell-tray="1"`)
-      : `<button class="spell-btn" data-toggle-default-spell-tray="1" title="其他召喚師技能">⋯ 其他</button>`;
+      ? spellButtonHtml(
+          extraSelected,
+          true,
+          `data-toggle-default-spell-tray="1" aria-expanded="${defaultSpellTrayOpen}"`
+        )
+      : `<button class="spell-btn" data-toggle-default-spell-tray="1" aria-expanded="${defaultSpellTrayOpen}" title="其他召喚師技能">⋯ 其他</button>`;
   const tray = EXTRA_SECONDARY_SPELL_IDS.map((id) =>
     spellButtonHtml(id, current === id, `data-pick-default-spell="${id}"`)
   ).join("");
@@ -325,6 +329,21 @@ document.getElementById("cfgDefaultSpellPicker")?.addEventListener("click", (e) 
       );
     }
   })();
+});
+
+document.addEventListener("click", (e) => {
+  if (!defaultSpellTrayOpen) return;
+  const picker = document.getElementById("cfgDefaultSpellPicker");
+  if (picker && e.composedPath().includes(picker)) return;
+  defaultSpellTrayOpen = false;
+  renderDefaultSpellPicker();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && defaultSpellTrayOpen) {
+    defaultSpellTrayOpen = false;
+    renderDefaultSpellPicker();
+  }
 });
 
 document.getElementById("cfgPrimarySpellKey")?.addEventListener("change", () => {

@@ -120,12 +120,18 @@ function renderFlashCard(total: number, classifiedCount: number, unrankedCount: 
 
   if (!cardEl) return;
   if (!currentFlashChampion) {
+    cardEl.classList.add("is-empty");
+    cardEl.draggable = false;
+    cardEl.setAttribute("draggable", "false");
     cardEl.innerHTML = `
       <div class="nm">🎉 全部英雄已分類完成！</div>
-      <div class="meta">目前沒有剩餘的「未分類」英雄，可切換至「② 階層內二選一」排定細部順位，或切到「重新檢視全部英雄」。</div>`;
+      <div class="meta">目前沒有剩餘的「未分類」英雄，可切換至「階層內二選一」或「二分法排序」排定細部順位，或切到「重新檢視全部英雄」。</div>`;
     return;
   }
 
+  cardEl.classList.remove("is-empty");
+  cardEl.draggable = true;
+  cardEl.setAttribute("draggable", "true");
   cardEl.innerHTML = `
     ${img(currentFlashChampion.id, currentFlashChampion.n)}
     <div class="nm">${escapeHtml(currentFlashChampion.n)}</div>
@@ -340,6 +346,9 @@ function renderBattle() {
 
   const elL = document.getElementById("fL");
   const elR = document.getElementById("fR");
+  const isEmpty = battlePool.length < 2 || !currentPair;
+  elL?.classList.toggle("is-empty", isEmpty);
+  elR?.classList.toggle("is-empty", isEmpty);
   if (battlePool.length < 2) {
     const msg = `<div class="nm">此範圍英雄不足 2 隻</div><div class="meta">請先用「閃卡五分類」或「優先序」頁的「帳號專精自動初排」放入英雄，或切換上方範圍。</div>`;
     if (elL) elL.innerHTML = msg;
@@ -751,7 +760,11 @@ export function initBattle(d: BattleDeps) {
 
   const flashBucketsEl = document.getElementById("flashBuckets");
   document.getElementById("flashCard")?.addEventListener("dragstart", (e) => {
-    const id = currentFlashChampion?.id ?? 0;
+    if (!currentFlashChampion) {
+      e.preventDefault();
+      return;
+    }
+    const id = currentFlashChampion.id;
     e.dataTransfer?.setData("text/plain", String(id));
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
   });

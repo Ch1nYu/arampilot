@@ -205,8 +205,13 @@
               <span class="set-lab">顯示時機</span>
               <span class="chk" data-chk id="cfgChatTriggers"><button class="on" data-v="accept_teammate">我同意隊友請求</button><button class="on" data-v="teammate_accept_mine">隊友同意我的請求</button></span>
             </div>
-            <div class="row"><div class="label"><b>自訂語句</b><span>多筆時隨機送一則；支援 {old} {new}</span></div><div class="msgs" id="msgs"></div></div>
-            <div class="addrow"><input class="input" id="msgIn" placeholder="輸入訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入</button></div>
+            <div class="row chat-row">
+              <div class="label"><b>自訂語句</b><span>多筆時隨機送一則；支援 {old} {new}</span></div>
+              <div class="chat-msgs-col">
+                <div class="msgs" id="msgs"></div>
+                <div class="addrow"><input class="input" id="msgIn" placeholder="輸入訊息，按 Enter 新增"><button class="btn primary" id="msgAdd">加入</button></div>
+              </div>
+            </div>
             <div class="note" id="msgPreview" style="margin-top:8px"></div>
           </div>
         </div>
@@ -482,7 +487,7 @@
             <span id="appVersionText" style="color:var(--muted)">v—</span>
           </div>
           <div class="set-row">
-            <span class="set-lab" id="updateStatusText">尚未檢查更新</span>
+            <span class="update-status" id="updateStatusText">尚未檢查更新</span>
             <button class="btn" id="btnCheckUpdate">檢查更新</button>
           </div>
         </div>

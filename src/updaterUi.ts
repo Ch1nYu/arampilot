@@ -7,6 +7,11 @@ import { state } from "./state";
 import { friendlyUpdateError, isBusyPhase, progressLabel, releaseNotes } from "./updater";
 
 /* ---------- App Update (版本與更新) ---------- */
+export const UPDATE_DIALOG_CHOICES = [
+  { label: "稍後", value: "later" },
+  { label: "立即更新", value: "install", primary: true },
+] as const satisfies readonly { label: string; value: string; primary?: boolean }[];
+
 let appVersion = "";
 let appVersionText: HTMLElement | null;
 let updateStatusText: HTMLElement | null;
@@ -28,6 +33,7 @@ function updateDialogBody(body: string | undefined): string {
  * status line and the log page, and still opens the dialog when a release exists.
  */
 async function checkForUpdate(silent: boolean) {
+  const restoreFocusToButton = !silent && document.activeElement === btnCheckUpdate;
   if (btnCheckUpdate) btnCheckUpdate.disabled = true;
   if (!silent) setUpdateStatus("檢查中…");
   try {
@@ -39,8 +45,7 @@ async function checkForUpdate(silent: boolean) {
     }
     setUpdateStatus(`有新版本 v${update.version}`);
     const choice = await choiceDialog(`有新版本 v${update.version}`, updateDialogBody(update.body), [
-      { label: "立即更新", value: "install", primary: true },
-      { label: "稍後", value: "later" },
+      ...UPDATE_DIALOG_CHOICES,
     ]);
     if (choice === "install") await installUpdate(update);
     // User deferred: release the backend resource so the downloaded bytes are not held.
@@ -50,7 +55,12 @@ async function checkForUpdate(silent: boolean) {
     setUpdateStatus(message);
     if (silent) addLog("sys", message, String(err));
   } finally {
-    if (btnCheckUpdate) btnCheckUpdate.disabled = false;
+    if (btnCheckUpdate) {
+      btnCheckUpdate.disabled = false;
+      if (restoreFocusToButton && (!document.activeElement || document.activeElement === document.body)) {
+        btnCheckUpdate.focus();
+      }
+    }
   }
 }
 
