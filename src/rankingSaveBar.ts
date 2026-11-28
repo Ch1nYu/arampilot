@@ -74,7 +74,7 @@ export function renderRankingSaveBar() {
     save.classList.toggle("primary", dirty);
   }
   const revert = document.getElementById("btnRankSaveRevert") as HTMLButtonElement | null;
-  if (revert) revert.hidden = !dirty;
+  if (revert) revert.disabled = !dirty;
 }
 
 /** Copy the working ranking into the active save (儲存 / 儲存並切換). */

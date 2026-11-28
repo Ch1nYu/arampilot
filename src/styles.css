@@ -157,10 +157,16 @@ body {
 @keyframes pageIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .page-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-height: 30px;
   margin-bottom: 16px;
+}
+.page-head-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
 .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
@@ -187,7 +193,10 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 /* ---------- Settings rows：label 左、控件右、右緣同一欄 ---------- */
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; }
 .set-row + .set-row { border-top: 1px solid var(--line); }
-.set-lab { font-size: 13px; font-weight: 600; }
+.set-lab { font-size: 13px; font-weight: 600; flex: none; white-space: nowrap; }
+#updateStatusText { flex: 1 1 auto; white-space: normal; min-width: 0; }
+.set-row-top { align-items: flex-start; }
+.set-row-top > .set-lab { padding-top: 6px; }
 .set-val { font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
 .sliderbox { display: flex; align-items: center; gap: 12px; flex: none; }
 .row { display: flex; align-items: center; gap: 16px; padding: 11px 0; }
@@ -200,11 +209,11 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 .sw { position: relative; width: 36px; height: 20px; flex: none; display: inline-block; }
 .sw input { opacity: 0; position: absolute; inset: 0; cursor: pointer; z-index: 1; margin: 0; }
 .sw i { position: absolute; inset: 0; background: var(--line2); border-radius: var(--radius-pill); transition: .2s; }
-.sw i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--muted); border-radius: var(--radius-pill); transition: .2s; }
+.sw i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; background: var(--muted); border-radius: var(--radius-pill); transition: .2s; }
 .sw input:checked + i { background: var(--accent); }
-.sw input:checked + i::after { left: 18px; background: var(--accent-ink); }
+.sw input:checked + i::after { left: 19px; background: var(--accent-ink); }
 .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 7px; padding: 2px; height: 30px; align-items: center; flex: none; background: var(--panel2); }
-.seg button { background: none; border: 0; color: var(--muted); padding: 0 12px; height: 26px; line-height: 26px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; border-radius: 5px; transition: all .15s; }
+.seg button { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--muted); padding: 0 12px; height: 100%; line-height: 1; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; border-radius: 5px; transition: all .15s; }
 .seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 /* Accent swatches carry an inline text color; the selected one sits on the same color, so override it. */
 #accentPicker button.on { color: var(--accent-ink) !important; }
@@ -212,9 +221,16 @@ h1 { font-family: var(--head); font-size: 20px; font-weight: 700; letter-spacing
 .chk button { background: none; border: 1px solid var(--line2); color: var(--muted); padding: 5px 10px; border-radius: var(--radius-pill); font: inherit; font-size: 12px; cursor: pointer; transition: all .15s; }
 .chk button.on { border-color: var(--accent); color: var(--accent); }
 .chk button.on::before { content: "✓ "; }
-/* Auto-accept invites: status text beside the reload button; long friend lists scroll. */
-#inviteStatus { color: var(--muted); font-size: 11px; margin-left: 8px; }
-#cfgInviteFriends { max-height: 132px; overflow-y: auto; }
+/* Auto-accept invites: status sits left of the pinned reload button; chip lists wrap inside the right column. */
+.invite-chips { min-width: 0; flex: 1; justify-content: flex-end; }
+.invite-friends-box { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: 1; min-width: 0; }
+#inviteSearch { width: 170px; }
+#cfgInviteFriends { max-height: 132px; overflow-y: auto; width: 100%; justify-content: flex-end; }
+#cfgInviteFriends:empty { display: none; }
+.invite-reload-box { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 1; min-width: 0; }
+.invite-reload-box .btn { flex: none; }
+#inviteStatus { color: var(--muted); font-size: 11px; text-align: right; min-width: 0; }
+#inviteStatus:empty { display: none; }
 .range { display: flex; align-items: center; gap: 10px; flex: none; }
 input[type=range] { -webkit-appearance: none; appearance: none; width: 150px; height: 4px; border-radius: 2px; outline: none; cursor: pointer; --tw: 14px; background: linear-gradient(to right, var(--accent) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw))), var(--line2) calc(var(--tw) / 2 + var(--p, .5) * (100% - var(--tw)))); }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .45); }
@@ -238,7 +254,7 @@ a.go:hover { text-decoration: underline; }
 .hero-tabs-label { margin-left: 8px; font-size: 12px; color: var(--muted); }
 
 /* ---------- 排序存檔：英雄頁標題列右端 ---------- */
-.rank-save-bar { display: flex; align-items: center; gap: 5px; align-self: center; }
+.rank-save-bar { display: flex; align-items: center; gap: 5px; }
 .rank-save-bar .hero-tabs-label { margin-left: 0; }
 .rank-save-bar select.input { width: 130px; padding: 5px 8px; font-size: 11px; }
 .rank-save-bar .btn { padding: 5px 9px; font-size: 11px; }

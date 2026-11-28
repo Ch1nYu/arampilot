@@ -22,7 +22,7 @@ vi.mock("./battle", () => ({
   syncFlashPool: vi.fn(),
 }));
 
-const { initRankingSaveBar } = await import("./rankingSaveBar");
+const { initRankingSaveBar, renderRankingSaveBar } = await import("./rankingSaveBar");
 const { state } = await import("./state");
 
 function clickDelete(): Promise<void> {
@@ -64,5 +64,57 @@ describe("deleting a ranking save", () => {
     confirmDialog.mockResolvedValueOnce(false);
     await clickDelete();
     expect(state.rankingSaves.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("renderRankingSaveBar", () => {
+  beforeEach(() => {
+    state.profileList = [{ id: 1, n: "A", t: "本命", f: "" }];
+    state.rankingSaves = [
+      { id: "a", name: "main", items: [{ id: 1, name: "A", tier: "本命", flag: "" }] },
+    ];
+    state.activeRankingSave = "a";
+  });
+
+  it("keeps revert visible and toggles disabled instead of hidden so the bar never shifts", () => {
+    const mkBtn = () => {
+      const classes = new Set<string>();
+      return {
+        disabled: false,
+        hidden: false,
+        classList: {
+          toggle: (name: string, force?: boolean) => {
+            if (force) classes.add(name);
+            else classes.delete(name);
+          },
+          has: (name: string) => classes.has(name),
+        },
+      };
+    };
+    const els = {
+      rankSaveSelect: { innerHTML: "", value: "" },
+      btnRankSaveDelete: mkBtn(),
+      btnRankSaveNew: mkBtn(),
+      rankSaveStatus: { hidden: false },
+      btnRankSaveSave: mkBtn(),
+      btnRankSaveRevert: mkBtn(),
+    };
+    (globalThis as { document?: unknown }).document = {
+      getElementById: (id: string) => els[id as keyof typeof els] ?? null,
+    };
+
+    renderRankingSaveBar();
+    expect(els.rankSaveStatus.hidden).toBe(true);
+    expect(els.btnRankSaveSave.disabled).toBe(true);
+    expect(els.btnRankSaveRevert.disabled).toBe(true);
+    expect(els.btnRankSaveRevert.hidden).toBe(false);
+
+    state.profileList = [{ id: 1, n: "A", t: "愛角", f: "" }];
+    renderRankingSaveBar();
+    expect(els.rankSaveStatus.hidden).toBe(false);
+    expect(els.btnRankSaveSave.disabled).toBe(false);
+    expect(els.btnRankSaveSave.classList.has("primary")).toBe(true);
+    expect(els.btnRankSaveRevert.disabled).toBe(false);
+    expect(els.btnRankSaveRevert.hidden).toBe(false);
   });
 });

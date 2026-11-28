@@ -115,17 +115,20 @@
         <div class="card">
           <div class="card-head"><h3>自動接受組隊邀請</h3><label class="sw"><input type="checkbox" data-gate="g-invite" id="cfgAutoAcceptInvites"><i></i></label></div>
           <div class="rows" id="g-invite">
-            <div class="set-row">
+            <div class="set-row set-row-top">
               <span class="set-lab">接受這些分組</span>
-              <span class="chk" data-chk id="cfgInviteGroups"></span>
+              <span class="chk invite-chips" data-chk id="cfgInviteGroups"></span>
             </div>
-            <div class="set-row">
+            <div class="set-row set-row-top">
               <span class="set-lab">接受這些好友</span>
-              <span><input class="input" id="inviteSearch" placeholder="搜尋好友名稱…" style="width:170px;margin-bottom:6px"><span class="chk" data-chk id="cfgInviteFriends"></span></span>
+              <div class="invite-friends-box">
+                <input class="input" id="inviteSearch" placeholder="搜尋好友名稱…">
+                <span class="chk" data-chk id="cfgInviteFriends"></span>
+              </div>
             </div>
             <div class="set-row">
               <span class="set-lab">好友名單</span>
-              <span><button class="btn" id="inviteReload">重新讀取好友</button><span id="inviteStatus"></span></span>
+              <span class="invite-reload-box"><span id="inviteStatus"></span><button class="btn" id="inviteReload">重新讀取好友</button></span>
             </div>
           </div>
           <div class="hint">只在你沒有隊友、也不在排隊或對局時接受；只接受勾選的分組或好友，其他人的邀請不動</div>
@@ -246,11 +249,11 @@
       <section class="page" id="p-hero">
         <div class="page-head"><h1>英雄</h1>
           <div class="rank-save-bar">
+            <span id="rankSaveStatus" class="rank-save-status" hidden>未儲存</span>
             <span class="hero-tabs-label">排序存檔：</span>
             <select class="input" id="rankSaveSelect" title="切換排序存檔；按「儲存」才會把畫面上的排序寫進選中的這份"></select>
-            <span id="rankSaveStatus" class="rank-save-status" hidden>未儲存</span>
-            <button class="btn" id="btnRankSaveSave" title="把畫面上目前的排序、標記與二選一權重存進這份存檔">儲存</button>
-            <button class="btn" id="btnRankSaveRevert" title="捨棄未儲存的修改，回到這份存檔上次儲存的內容" hidden>還原</button>
+            <button class="btn" id="btnRankSaveSave" title="把畫面上目前的排序、標記與二選一權重存進這份存檔" disabled>儲存</button>
+            <button class="btn" id="btnRankSaveRevert" title="捨棄未儲存的修改，回到這份存檔上次儲存的內容" disabled>還原</button>
             <button class="btn" id="btnRankSaveNew" title="用畫面上目前的排序開一份新的存檔並切過去，原本這份維持上次儲存的內容">複製一份</button>
             <button class="btn" id="btnRankSaveRename">改名</button>
             <button class="btn" id="btnRankSaveDelete">刪除</button>
@@ -396,9 +399,13 @@
 
       <!-- 紀錄 -->
       <section class="page" id="p-log">
-        <div class="page-head"><h1>紀錄</h1>
-          <div class="seg" id="logView"><button class="on" data-v="matches">對戰</button><button data-v="exec">執行紀錄</button></div>
-          <div class="seg" data-seg id="logFilter"><button class="on" data-v="all">全部</button><button data-v="act">已執行</button><button data-v="skip">略過</button><button data-v="err">錯誤</button></div></div>
+        <div class="page-head">
+          <div class="page-head-main">
+            <h1>紀錄</h1>
+            <div class="seg" id="logView"><button class="on" data-v="matches">對戰</button><button data-v="exec">執行紀錄</button></div>
+          </div>
+          <div class="seg" data-seg id="logFilter" style="display:none"><button class="on" data-v="all">全部</button><button data-v="act">已執行</button><button data-v="skip">略過</button><button data-v="err">錯誤</button></div>
+        </div>
         <div class="card" id="matchView"><div id="matchList"></div></div>
         <div class="card" id="execView" style="display:none"><div class="log" id="logFull"></div></div>
       </section>
