@@ -195,23 +195,25 @@ function augmentIconsHtml(augments: AugmentPick[]): string {
     .slice(0, 6)
     .map((a) => {
       const rarity = a.rarity ? ` aug-${a.rarity}` : "";
-      return `<img class="aug${rarity}" src="${escapeHtml(augmentIconUrl(a.id))}" alt="" loading="lazy" title="${escapeHtml(a.name.trim() || `#${a.id}`)}">`;
+      const label = a.name.trim() || `#${a.id}`;
+      return `<img class="aug${rarity}" src="${escapeHtml(augmentIconUrl(a.id))}" data-n="${escapeHtml(label)}" alt="" loading="lazy" title="${escapeHtml(label)}">`;
     })
     .join("");
 }
 
-/** The ten column labels; the same grid as `.pl` so the numbers line up. */
-const tableHeadHtml = `<div class="hd"><span>英雄</span><span>玩家</span><span>等級</span><span>KDA</span><span>傷害</span><span>承受</span><span>金錢</span><span>海克斯</span><span>裝備</span></div>`;
+/** The nine column labels; the same grid as `.pl` so the numbers line up. */
+const tableHeadHtml = `<div class="hd"><span>英雄</span><span>玩家</span><span class="num">等級</span><span class="num">KDA</span><span class="num">傷害</span><span class="num">承受</span><span class="num gold">金錢</span><span>海克斯</span><span>裝備</span></div>`;
 
 function playerRowHtml(p: PlayerStats, maxDamage: number, nameOf: (id: number) => string): string {
   const bar = maxDamage > 0 ? Math.round((p.damageToChampions / maxDamage) * 100) : 0;
-  const name = p.name || nameOf(p.championId);
+  const champName = nameOf(p.championId);
+  const name = p.name || champName;
   const items = p.items
     .slice(0, 7)
-    .map((id) => `<img src="${escapeHtml(itemIconUrl(id))}" alt="" loading="lazy">`)
+    .map((id) => `<img src="${escapeHtml(itemIconUrl(id))}" data-n="裝" alt="" loading="lazy">`)
     .join("");
   const cls = p.isMe ? "pl me" : "pl";
-  return `<div class="${cls}"><img class="champ-ic" src="${escapeHtml(ICON(p.championId))}" alt="" loading="lazy"><span class="nm">${escapeHtml(name)}</span><span class="lv">Lv${p.level}</span><span class="kda">${p.kills}/${p.deaths}/${p.assists}</span><span class="dmg"><span class="n">${formatK(p.damageToChampions)}</span><span class="bar"><i style="width:${bar}%"></i></span></span><span class="taken">${formatK(p.damageTaken)}</span><span class="gold">${formatK(p.gold)}</span><span class="augs">${augmentIconsHtml(p.augments)}</span><span class="items">${items}</span></div>`;
+  return `<div class="${cls}"><img class="champ-ic" src="${escapeHtml(ICON(p.championId))}" data-n="${escapeHtml(champName)}" alt="" loading="lazy"><span class="nm">${escapeHtml(name)}</span><span class="lv">Lv${p.level}</span><span class="kda">${p.kills}/${p.deaths}/${p.assists}</span><span class="dmg"><span class="n">${formatK(p.damageToChampions)}</span><span class="bar"><i style="width:${bar}%"></i></span></span><span class="taken">${formatK(p.damageTaken)}</span><span class="gold">${formatK(p.gold)}</span><span class="augs">${augmentIconsHtml(p.augments)}</span><span class="items">${items}</span></div>`;
 }
 
 /** One team table; the title carries the result and the team totals. */
@@ -251,7 +253,8 @@ const compareRows: { key: CompareKey; label: string }[] = [
 function compareRowHtml(detail: GameDetail, key: CompareKey, label: string, size: number): string {
   const c = teamCompare(detail, key);
   const pct = (v: number) => (c.max > 0 ? Math.round((v / c.max) * 100) : 0);
-  return `<div class="me-cmp"><span class="k">${label}</span><span class="trk"><i class="fill" style="width:${pct(c.mine)}%"></i><i class="avg" style="left:${pct(c.avg)}%" title="隊上平均 ${escapeHtml(formatK(c.avg))}"></i></span><span class="v">${escapeHtml(formatK(c.mine))}</span><span class="rk">第 ${c.rank} / ${size}</span></div>`;
+  const avgTip = `隊上平均 ${formatK(c.avg)}`;
+  return `<div class="me-cmp"><span class="k">${label}</span><span class="trk" title="${escapeHtml(avgTip)}"><i class="fill" style="width:${pct(c.mine)}%"></i><i class="avg" style="left:${pct(c.avg)}%" title="${escapeHtml(avgTip)}"></i></span><span class="v">${escapeHtml(formatK(c.mine))}</span><span class="rk">第 ${c.rank} / ${size}</span></div>`;
 }
 
 /** Above the tables: my art, one identity line, the big KDA, my best line, my ranks and my picks. */
@@ -264,18 +267,26 @@ function personalCardHtml(
   const team = teamOf(detail, me);
   const res = me.win ? "win" : "loss";
   const highlight = personalHighlight(detail);
+  const champName = nameOf(me.championId);
+  const augs = augmentIconsHtml(me.augments);
   const items = me.items
     .slice(0, 7)
-    .map((id) => `<img src="${escapeHtml(itemIconUrl(id))}" alt="" loading="lazy">`)
+    .map((id) => `<img src="${escapeHtml(itemIconUrl(id))}" data-n="裝" alt="" loading="lazy">`)
     .join("");
+  const iconGroups = [
+    augs ? `<span class="me-icon-group me-augs">${augs}</span>` : "",
+    items ? `<span class="me-icon-group me-items">${items}</span>` : "",
+  ]
+    .filter(Boolean)
+    .join(`<span class="me-icon-sep" aria-hidden="true"></span>`);
   const rows = compareRows.map((c) => compareRowHtml(detail, c.key, c.label, team.length)).join("");
   const line = [
     `<span class="res ${res}">${me.win ? "勝" : "敗"}</span>`,
     escapeHtml(queueModeLabel(r.queueId)),
     formatDuration(detail.durationSec),
-    escapeHtml(nameOf(me.championId)),
+    escapeHtml(champName),
   ].join(" · ");
-  return `<div class="me-card ${res}"><img class="me-art" src="${escapeHtml(loadScreenUrl(me.championId))}" alt=""><div class="me-body"><div class="me-line">${line}</div><div class="me-kda"><b>${me.kills} / ${me.deaths} / ${me.assists}</b><span>傷害佔 ${damageShare(me, team)}%</span></div>${highlight ? `<div class="me-hl">${escapeHtml(highlight)}</div>` : ""}<div class="me-cmps">${rows}</div><div class="me-icons">${augmentIconsHtml(me.augments)}${items}</div></div></div>`;
+  return `<div class="me-card ${res}"><img class="me-art" src="${escapeHtml(loadScreenUrl(me.championId))}" data-n="${escapeHtml(champName)}" alt=""><div class="me-body"><div class="me-line">${line}</div><div class="me-kda"><b>${me.kills} / ${me.deaths} / ${me.assists}</b><span>傷害佔 ${damageShare(me, team)}%</span></div>${highlight ? `<div class="me-hl">${escapeHtml(highlight)}</div>` : ""}<div class="me-cmps">${rows}</div><div class="me-icons">${iconGroups}</div></div></div>`;
 }
 
 /** Body of one `<details class="match">`: the log alone, or the two tables plus the folded log. */
@@ -296,12 +307,15 @@ function matchBodyHtml(r: MatchRecord, nameOf: (id: number) => string): string {
   return `${card}<div class="match-dur">遊戲時間 <b>${formatDuration(detail.durationSec)}</b></div>${teams}<details class="match-log"><summary>App 做了什麼（${r.log.length} 行）</summary>${log}</details>`;
 }
 
+/** Column header row above the collapsed match list; matches `.match > summary`'s grid tracks. */
+const matchListHeadHtml = `<div class="match-list-hd" aria-hidden="true"><span class="chev"></span><span class="t">時間</span><span class="mode">模式</span><span class="champ">英雄</span><span class="kda">KDA</span><span class="dmg">傷害</span><span class="gold">金錢</span><span class="augs">海克斯</span><span class="res">勝負</span><span class="acts">App 動作</span></div>`;
+
 /** One line per game, newest first and opened; the record's own log lines expand below it. */
 export function matchListHtml(records: MatchRecord[], nameOf: (id: number) => string): string {
   if (!records.length) {
     return `<div class="card-desc">還沒有對戰紀錄。打完一場 ARAM 或 Mayhem 後會出現在這裡。</div>`;
   }
-  return [...records]
+  const items = [...records]
     .reverse()
     .map((r, i) => {
       const res = resultLabel(r.result);
@@ -311,9 +325,10 @@ export function matchListHtml(records: MatchRecord[], nameOf: (id: number) => st
       const dmg = me ? formatK(me.damageToChampions) : "—";
       const gold = me ? formatK(me.gold) : "—";
       const augs = me ? augmentIconsHtml(me.augments) : "";
-      return `<details class="match"${i === 0 ? " open" : ""}><summary><span class="t">${escapeHtml(formatMatchTime(r.date, r.time))}</span><span>${escapeHtml(queueModeLabel(r.queueId))}</span><span class="champ">${escapeHtml(champ)}</span><span class="kda">${kda}</span><span class="dmg">${dmg}</span><span class="gold">${gold}</span><span class="augs">${augs}</span><span class="res ${res.cls}">${escapeHtml(res.text)}</span><span class="acts">${escapeHtml(actionsText(r.actions))}</span></summary>${matchBodyHtml(r, nameOf)}</details>`;
+      return `<details class="match"${i === 0 ? " open" : ""}><summary><span class="chev" aria-hidden="true">▸</span><span class="t">${escapeHtml(formatMatchTime(r.date, r.time))}</span><span>${escapeHtml(queueModeLabel(r.queueId))}</span><span class="champ">${escapeHtml(champ)}</span><span class="kda">${kda}</span><span class="dmg">${dmg}</span><span class="gold">${gold}</span><span class="augs">${augs}</span><span class="res ${res.cls}">${escapeHtml(res.text)}</span><span class="acts">${escapeHtml(actionsText(r.actions))}</span></summary>${matchBodyHtml(r, nameOf)}</details>`;
     })
     .join("");
+  return `${matchListHeadHtml}${items}`;
 }
 
 /* ---------- 紀錄 page wiring ---------- */
@@ -338,8 +353,10 @@ async function loadMatches() {
   }
 }
 
+export type LogView = "matches" | "exec";
+
 /** The log filter only applies to the 執行紀錄 view, so it is hidden with 對戰. */
-function showView(view: "matches" | "exec") {
+function showView(view: LogView) {
   const matches = view === "matches";
   const show = (id: string, visible: boolean) => {
     const el = document.getElementById(id);
@@ -350,23 +367,40 @@ function showView(view: "matches" | "exec") {
   show("logFilter", !matches);
 }
 
+/** Switches the 紀錄 page between 對戰 and 執行紀錄, keeping the segmented toggle in sync. */
+export function setLogView(view: LogView): void {
+  const seg = document.getElementById("logView");
+  seg?.querySelectorAll("button").forEach((b) => {
+    b.classList.toggle("on", (b.dataset.v === "exec" ? "exec" : "matches") === view);
+  });
+  showView(view);
+}
+
 /** Registers the 對戰 / 執行紀錄 switch and the first load; called from main.ts. */
 export function initMatchHistory() {
-  showView("matches"); // the page opens on 對戰, so the log filter starts hidden
+  setLogView("matches"); // the page opens on 對戰, so the log filter starts hidden
   const seg = document.getElementById("logView");
   seg?.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest("button");
+    const target = e.target as HTMLElement | null;
+    const btn = target?.closest("button");
     if (!btn || !seg.contains(btn)) return;
-    const view = btn.dataset.v === "exec" ? "exec" : "matches";
-    seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
-    showView(view);
+    const view: LogView = btn.dataset.v === "exec" ? "exec" : "matches";
+    setLogView(view);
     if (view === "matches") void loadMatches();
   });
 
   // The nav item and the overview's 查看完整紀錄 link both open this page.
   document.addEventListener("click", (e) => {
-    if (!(e.target as HTMLElement).closest('[data-go="log"]')) return;
-    void loadMatches();
+    const target = e.target as HTMLElement | null;
+    const trigger = target?.closest<HTMLElement>('[data-go="log"]');
+    if (!trigger) return;
+    const requested = trigger.dataset.logView;
+    if (requested === "exec" || requested === "matches") {
+      setLogView(requested);
+    }
+    if (requested !== "exec") {
+      void loadMatches();
+    }
   });
 
   listen("match-history-updated", () => {

@@ -1,18 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   actionsText,
   formatDuration,
   formatK,
   formatMatchTime,
+  initMatchHistory,
   matchListHtml,
   personalHighlight,
   resultLabel,
+  setLogView,
   teamCompare,
   teamOf,
   type GameDetail,
   type MatchRecord,
   type PlayerStats,
 } from "./matchHistory";
+
+const { invokeMock, listenMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn(async () => [] as MatchRecord[]),
+  listenMock: vi.fn(async () => () => {}),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 const rec = (over: Partial<MatchRecord> = {}): MatchRecord => ({
   gameId: 1,
@@ -429,8 +438,9 @@ describe("teamCompare", () => {
 });
 
 describe("the personal card", () => {
-  /** The card is the first thing in the body, so the tables start at the duration line. */
-  const cardOf = (html: string) => html.slice(0, html.indexOf('<div class="match-dur">'));
+  /** The card is the first thing in the body, so it runs from `.me-card` to the duration line. */
+  const cardOf = (html: string) =>
+    html.slice(html.indexOf('<div class="me-card'), html.indexOf('<div class="match-dur">'));
 
   const withKda = (kills: number, deaths: number, assists: number): PlayerStats[] =>
     tenPlayers().map((p, i) => (i === 0 ? { ...p, kills, deaths, assists } : p));
@@ -441,13 +451,13 @@ describe("the personal card", () => {
     expect(html.indexOf('class="me-card')).toBeLessThan(html.indexOf('class="match-dur"'));
     expect(html.indexOf('class="me-card')).toBeLessThan(html.indexOf("我方"));
     expect(card).toContain('<div class="me-card win">');
-    expect(card).toContain('<img class="me-art" src="http://icon.localhost/loadscreen/1.jpg" alt="">');
+    expect(card).toContain('<img class="me-art" src="http://icon.localhost/loadscreen/1.jpg" data-n="英雄1" alt="">');
     expect(card).toContain('<span class="res win">勝</span> · ARAM · 18:47 · 英雄1');
     expect(card).toContain("<b>9 / 8 / 39</b>");
     expect(card).toContain("傷害佔 38%");
     expect(card).toContain('<div class="me-hl">全場最高輸出，佔全隊傷害 38%</div>');
-    expect(card).toContain('<img class="aug aug-gold" src="http://icon.localhost/augment/123.png"');
-    expect(card).toContain('src="http://icon.localhost/item/1001.png"');
+    expect(card).toContain('<img class="aug aug-gold" src="http://icon.localhost/augment/123.png" data-n="閃電"');
+    expect(card).toContain('src="http://icon.localhost/item/1001.png" data-n="裝"');
   });
 
   it("gives each compare row a bar, my value, the team average and my rank", () => {
@@ -490,5 +500,95 @@ describe("the personal card", () => {
     const html = matchListHtml([rec({ date: "2026-11-24" }), detailed({ date: "2026-11-25" })], nameOf);
     expect(html.match(/class="match" open/g) ?? []).toHaveLength(1);
     expect(html.indexOf('class="match" open')).toBeLessThan(html.indexOf('class="match">'));
+  });
+
+  it("renders list column header, expand chevron, icon grouping, team-avg track tooltip, and data-n fallbacks", () => {
+    const html = matchListHtml([detailed()], nameOf);
+    expect(html).toContain('<div class="match-list-hd"');
+    expect(html).toContain('<span class="chev" aria-hidden="true">▸</span>');
+    expect(html).toContain('<span class="me-icon-group me-augs">');
+    expect(html).toContain('<span class="me-icon-sep" aria-hidden="true"></span>');
+    expect(html).toContain('<span class="me-icon-group me-items">');
+    expect(html).toContain('<span class="trk" title="隊上平均 37.2k">');
+    expect(html).toContain('<img class="champ-ic" src="http://icon.localhost/champion/1.png" data-n="英雄1"');
+    // Every <img> in matchListHtml must carry a non-empty data-n fallback.
+    const imgs = html.match(/<img\b[^>]*>/g) ?? [];
+    expect(imgs.length).toBeGreaterThan(0);
+    for (const tag of imgs) {
+      expect(tag).toMatch(/\bdata-n="[^"]+"/);
+    }
+  });
+
+  it("omits the icon group separator when a player only has items", () => {
+    const players = tenPlayers().map((p, i) => (i === 0 ? { ...p, augments: [] } : p));
+    const card = cardOf(matchListHtml([rec({ detail: { durationSec: 1127, players } })], nameOf));
+    expect(card).toContain('class="me-icon-group me-items"');
+    expect(card).not.toContain("me-icon-sep");
+  });
+});
+
+describe("initMatchHistory log view routing (#14)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("switches to the exec view when clicking overview's 查看完整紀錄 link", () => {
+    const mkBtn = (v: string) => {
+      const classes = new Set<string>(v === "matches" ? ["on"] : []);
+      return {
+        dataset: { v },
+        classList: {
+          toggle: (name: string, force?: boolean) => {
+            if (force) classes.add(name);
+            else classes.delete(name);
+          },
+          has: (name: string) => classes.has(name),
+        },
+      };
+    };
+    const btnMatches = mkBtn("matches");
+    const btnExec = mkBtn("exec");
+    const seg = {
+      addEventListener: vi.fn(),
+      querySelectorAll: () => [btnMatches, btnExec],
+      contains: () => true,
+    };
+    const els: Record<string, unknown> = {
+      logView: seg,
+      matchView: { style: { display: "" } },
+      execView: { style: { display: "none" } },
+      logFilter: { style: { display: "none" } },
+      matchList: { innerHTML: "" },
+    };
+    let docClick: ((e: unknown) => void) | undefined;
+    (globalThis as { document?: unknown }).document = {
+      getElementById: (id: string) => els[id] ?? null,
+      addEventListener: (type: string, fn: (e: unknown) => void) => {
+        if (type === "click") docClick = fn;
+      },
+    };
+
+    initMatchHistory();
+    expect((els.matchView as { style: { display: string } }).style.display).toBe("");
+    expect((els.execView as { style: { display: string } }).style.display).toBe("none");
+    expect((els.logFilter as { style: { display: string } }).style.display).toBe("none");
+    expect(btnMatches.classList.has("on")).toBe(true);
+    expect(btnExec.classList.has("on")).toBe(false);
+
+    // Click overview's 查看完整紀錄 -> should activate 執行紀錄 view and show logFilter
+    const trigger = { dataset: { go: "log", logView: "exec" } };
+    docClick?.({ target: { closest: (sel: string) => (sel === '[data-go="log"]' ? trigger : null) } });
+
+    expect((els.matchView as { style: { display: string } }).style.display).toBe("none");
+    expect((els.execView as { style: { display: string } }).style.display).toBe("");
+    expect((els.logFilter as { style: { display: string } }).style.display).toBe("");
+    expect(btnMatches.classList.has("on")).toBe(false);
+    expect(btnExec.classList.has("on")).toBe(true);
+
+    // Explicitly switching back via setLogView keeps toggle and panels in sync
+    setLogView("matches");
+    expect((els.matchView as { style: { display: string } }).style.display).toBe("");
+    expect((els.execView as { style: { display: string } }).style.display).toBe("none");
+    expect(btnMatches.classList.has("on")).toBe(true);
   });
 });

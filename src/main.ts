@@ -89,10 +89,11 @@ function primarySpellKeyFromUI(): string {
 document.addEventListener(
   "error",
   (e) => {
-    const t = e.target as HTMLElement;
-    if (t.tagName === "IMG" && t.dataset.n) {
+    const t = e.target;
+    if (t instanceof HTMLImageElement && t.dataset.n) {
       const s = document.createElement("span");
-      s.className = "ph";
+      s.className = t.className ? `${t.className} ph` : "ph";
+      if (t.title) s.title = t.title;
       s.textContent = t.dataset.n[0];
       t.replaceWith(s);
     }

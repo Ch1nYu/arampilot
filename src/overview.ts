@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { applyAssist, emptyAssist, type AssistPayload, type AssistState } from "./assist";
 import { checkboxValue } from "./formControls";
-import { escapeHtml, ICON, img } from "./html";
+import { escapeHtml, img } from "./html";
 import { addLog } from "./logs";
 import { signedDiff } from "./queues";
 import {
@@ -260,11 +260,12 @@ function renderTradeColumn(
       ? `<span class="btn${suggestion?.verdict === "accept" ? " primary" : ""}" data-accept-trade="${tradeId}">同意</span><span class="btn${suggestion?.verdict === "reject" ? " primary" : ""}" data-decline-trade="${tradeId}">拒絕</span>`
       : "";
 
+  const offeredName = offered?.n || `ID:${offeredId}`;
   el.style.display = "";
   el.innerHTML = `
-    <img src="${ICON(offeredId)}" alt="" />
+    ${img(offeredId, offeredName)}
     <span class="tx"><b>${escapeHtml(String(traderName))}</b>（${isFriend ? "隊友" : "路人"}）想用 <b>${escapeHtml(
-      offered?.n || `ID:${offeredId}`
+      offeredName
     )}</b> 換你的 <b>${escapeHtml(myName)}</b>・分差 ${signedDiff(diff)}（門檻 ${tradeDiff}）${
       suggestLabel ? `・${suggestLabel}` : ""
     }${reasonText ? `・${reasonText}` : ""}</span>
@@ -286,7 +287,7 @@ function renderAssistBanners() {
       const name = state.profileList.find((c) => c.id === card.champId)?.n || `ID:${card.champId}`;
       cardEl.style.display = "";
       cardEl.innerHTML = `
-    <img src="${ICON(card.champId)}" alt="" />
+    ${img(card.champId, name)}
     <span class="tx"><b>${escapeHtml(name)}</b>・建議選這張${
         card.reason ? `<span class="reason">${escapeHtml(card.reason)}</span>` : ""
       }</span>
